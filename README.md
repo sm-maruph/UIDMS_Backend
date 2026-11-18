@@ -39,6 +39,7 @@ Open each file from this backend's `sql` folder in SSMS. Review it, then execute
 | 7 | [007-separate-drive-requests.sql](sql/007-separate-drive-requests.sql) | Names I Drive / S Drive Access and N Drive Access separately, and adds the S Drive system. |
 | 8 | [008-system-email-templates.sql](sql/008-system-email-templates.sql) | Adds system email templates, optional group approval overrides and per-ticket email drafts. |
 | 9 | [009-service-email-templates.sql](sql/009-service-email-templates.sql) | Adds service-specific templates and service-wide defaults. |
+| 10 | [010-directory-identities.sql](sql/010-directory-identities.sql) | Links an authenticated directory system ID to a UIDMS user profile. |
 
 The scripts use database name `CBC_UIDMS`. If you change that name, update the database references in the SQL scripts and set `DB_NAME` in your environment.
 
@@ -82,7 +83,9 @@ Check the connection and privilege boundary:
 npm.cmd run db:check
 ```
 
-Expected database `CBC_UIDMS`, schema version `6` after script 009, nonzero systems and request types, `IsDbOwner=0`, `IsSysadmin=0`, and no update or delete permission on audit events.
+Expected database `CBC_UIDMS`, schema version `7` after script 010, nonzero systems and request types, `IsDbOwner=0`, `IsSysadmin=0`, and no update or delete permission on audit events.
+
+For future AD integration, use the verified, canonical system ID from the server-side directory adapter to call `directoryProfile` and `completeDirectoryProfile`. Existing email or employee ID matches require an IT-managed link. New self-enrolled profiles receive the `User` role. The directory adapter and its public sign-in flow are pending.
 
 ## 4. Create the first administrator
 
