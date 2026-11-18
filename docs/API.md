@@ -186,6 +186,9 @@ The server validates recipients against the requester, movement employee and eli
 
 | Method | Path | Behavior |
 | --- | --- | --- |
+| GET | `/requests/:id/email-drafts` | IT reads drafts saved after final approval, including send confirmations |
+| POST | `/requests/:id/email-drafts` | IT initializes drafts for a previously approved ticket; `{}` |
+| POST | `/requests/:id/email-drafts/:draftId/sent` | IT records `{confirmedSent:true,email?}` after sending a draft; `email` may contain the reviewed `to`, `cc`, `subject`, and `body` |
 | POST | `/requests/:id/processing` | IT records `{version,reference,notes?}` after approval; reference is the real provisioning/email reference |
 | POST | `/requests/:id/complete` | IT records `{version,notes,confirmedProvisioned:true,credentials:[...]}`; fresh login |
 | GET | `/deliveries` | Only the current user's unread, unexpired delivery metadata |
@@ -196,6 +199,20 @@ Credential row: `{employeeId,systemId,username,password}`. Never put credentials
 On completion the API records the approved access changes. It does not actually connect to AD, ICBS, email, file servers or other bank systems. `confirmedProvisioned` means IT has already verified the external action. Reset requests do not grant additional access. Movement replaces transferable system grants while preserving services outside that catalogue category. System deactivation affects only selected grants; employee deactivation disables the portal account, revokes sessions and all recorded grants. Disabling admin accounts requires the admin process.
 
 `Approved` counts as IT processing until processing is recorded. The processing endpoint moves the ticket to HO processing. After completion, the ticket closes. A delivery expires in 24 hours and can be read only once; plan a secure reissue process for lost/expired credentials.
+
+If a ticket has group drafts, IT confirms each draft before recording processing or completion. The API records the IT confirmation. The actual send occurs in the mail client.
+
+## System email templates
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| GET | `/system-email-templates` | IT and Admin get templates, the system catalogue, and each service's category, eligible system IDs and variables |
+| POST | `/system-email-templates` | IT and Admin create a template using `{category,name,systemIds,to,cc,subject,body}`. Use an empty `systemIds` array for a service-wide default. `to` and `cc` are arrays of addresses |
+| PUT | `/system-email-templates/:id` | Update the template using the same fields plus `version` |
+| DELETE | `/system-email-templates/:id` | Delete using `{version}` after any approval overrides are removed |
+| PUT | `/system-email-templates/:id/workflows/:code` | Platform Admin or Super Admin saves `{steps:[...]}` for the template group and request type; `steps:[]` restores the default |
+
+Writes to template and workflow configuration require recent sign-in. Use `{{items}}` in the body to render only the employee and system rows assigned to the draft. Other item variables render the unique values across those rows.
 
 ## Attachments
 

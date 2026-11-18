@@ -8,8 +8,8 @@
 USE master;
 GO
 DECLARE @Password nvarchar(128)=N'REPLACE_WITH_A_STRONG_UNIQUE_DATABASE_PASSWORD';
-IF @Password LIKE N'REPLACE%' OR LEN(@Password)<24
-  THROW 51002,'Set a unique runtime login password of at least 24 characters before executing this script.',1;
+IF @Password LIKE N'REPLACE%' OR LEN(@Password)<12
+  THROW 51002,'Set a unique runtime login password of at least 12 characters before executing this script.',1;
 IF DB_ID(N'CBC_UIDMS') IS NULL
   THROW 51003,'Install database scripts 001, 002 and 003 before running runtime permissions.',1;
 BEGIN TRY
@@ -35,6 +35,12 @@ GRANT DELETE ON dbo.RequestSteps TO uidms_runtime;
 GRANT DELETE ON dbo.MailingGroupMembers TO uidms_runtime;
 GRANT DELETE ON dbo.WorkflowSteps TO uidms_runtime;
 GRANT DELETE ON dbo.RateLimitBuckets TO uidms_runtime;
+IF OBJECT_ID(N'dbo.SystemEmailTemplates') IS NOT NULL
+BEGIN
+ GRANT DELETE ON dbo.SystemEmailTemplates TO uidms_runtime;
+ GRANT DELETE ON dbo.SystemEmailTemplateSystems TO uidms_runtime;
+ GRANT DELETE ON dbo.SystemApprovalOverrides TO uidms_runtime;
+END;
 DENY UPDATE,DELETE ON dbo.AuditEvents TO uidms_runtime;
 DENY INSERT,UPDATE,DELETE ON dbo.SchemaVersions TO uidms_runtime;
 DENY INSERT,UPDATE,DELETE ON dbo.PortalRoles TO uidms_runtime;

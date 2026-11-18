@@ -8,14 +8,62 @@ import {assertVersion} from '../requests/policy.js';
 import {version} from '../requests/schemas.js';
 import {roles,recentAuth} from '../auth/service.js';
 import {audit,notify} from '../audit/service.js';
+import {createEmailDrafts,readEmailDrafts,emailFields} from './system-email.js';
+
+const processingStates=['Approved','IT processing','HO processing'];
+const sentDraft=z.object({confirmedSent:z.literal(true),email:emailFields.extend({body:text(200000)}).strict().optional()}).strict();
+
+async function requireEmailDraftsSent(query,requestId){
+ const {recordset}=await query(`SELECT TOP (1) Id FROM dbo.RequestEmailDrafts
+  WHERE RequestId=@id AND SentAt IS NULL AND EXISTS(SELECT 1 FROM dbo.RequestEmailDrafts WHERE RequestId=@id AND TemplateId IS NOT NULL)`,{id:p.id(requestId)});
+ requireCondition(!recordset.length,409,'EMAIL_DRAFTS_PENDING','Confirm each processing email was sent before continuing.');
+}
 
 export function fulfilmentRoutes(db,config){
  const router=Router();
+ router.get('/requests/:id/email-drafts',roles('IT'),async(req,res)=>{
+  const requestId=uuidParam(req);
+  const ticket=await loadTicket(db.query,requestId,req.user);
+  requireCondition([...processingStates,'Completed'].includes(ticket.Status),409,'FINAL_APPROVAL_REQUIRED');
+  res.json({items:await readEmailDrafts(db.query,requestId)});
+ });
+ // Initialize drafts for tickets approved before this feature was installed.
+ router.post('/requests/:id/email-drafts',roles('IT'),async(req,res)=>{
+  const requestId=uuidParam(req);
+  const items=await db.transaction(async query=>{
+   const ticket=await loadTicket(query,requestId,req.user,{lock:true});
+   requireCondition(ticket.Status==='Approved',409,'FINAL_APPROVAL_REQUIRED');
+   requireCondition(ticket.RequesterId!==req.user.Id&&ticket.SubjectUserId!==req.user.Id,403,'SEPARATION_OF_DUTIES');
+   const drafts=await readEmailDrafts(query,requestId);
+   if(drafts.length)return drafts;
+   await createEmailDrafts(query,ticket);
+   return readEmailDrafts(query,requestId);
+  });
+  res.json({items});
+ });
+ router.post('/requests/:id/email-drafts/:draftId/sent',roles('IT'),async(req,res)=>{
+  const requestId=uuidParam(req),draftId=uuidParam(req,'draftId'),body=parse(sentDraft,req.body);
+  await db.transaction(async query=>{
+   const ticket=await loadTicket(query,requestId,req.user,{lock:true});
+   requireCondition(processingStates.includes(ticket.Status),409,'FINAL_APPROVAL_REQUIRED');
+   requireCondition(ticket.RequesterId!==req.user.Id&&ticket.SubjectUserId!==req.user.Id,403,'SEPARATION_OF_DUTIES');
+   const params={request:p.id(requestId),draft:p.id(draftId)};
+   const row=(await query('SELECT Content,SentAt FROM dbo.RequestEmailDrafts WHERE Id=@draft AND RequestId=@request',params)).recordset[0];
+   requireCondition(row,404,'DRAFT_NOT_FOUND');
+   if(row.SentAt)return;
+   const content={...JSON.parse(row.Content),...body.email};
+   requireCondition(content.to.length&&content.subject.trim()&&content.body.trim(),400,'INCOMPLETE_EMAIL','Enter a recipient, subject and body for this draft.');
+   await query('UPDATE dbo.RequestEmailDrafts SET Content=@content,SentBy=@actor,SentAt=SYSUTCDATETIME() WHERE Id=@draft AND RequestId=@request',{...params,content:p.json(content),actor:p.id(req.user.Id)});
+   await audit(query,req,'fulfilment.email_marked_sent',requestId,{draftId});
+  });
+  res.status(204).end();
+ });
  router.post('/requests/:id/processing',roles('IT'),async(req,res)=>{
   const requestId=uuidParam(req),body=parse(z.object({version,reference:text(250),notes:text(2000,0).default('')}).strict(),req.body);
   await db.transaction(async query=>{
    const ticket=await loadTicket(query,requestId,req.user,{lock:true});assertVersion(ticket,body.version);requireCondition(['Approved','IT processing'].includes(ticket.Status),409,'NOT_READY_FOR_PROCESSING');
    requireCondition(ticket.RequesterId!==req.user.Id,403,'SEPARATION_OF_DUTIES');
+   await requireEmailDraftsSent(query,requestId);
    await query('UPDATE dbo.Fulfilments SET ActorId=@actor,ProcessingReference=@reference,Notes=@notes,ProcessingAt=SYSUTCDATETIME() WHERE RequestId=@id; IF @@ROWCOUNT=0 INSERT dbo.Fulfilments(RequestId,ActorId,ProcessingReference,Notes,ProcessingAt) VALUES(@id,@actor,@reference,@notes,SYSUTCDATETIME()); UPDATE dbo.Requests SET Status=\'HO processing\',UpdatedAt=SYSUTCDATETIME() WHERE Id=@id',{actor:p.id(req.user.Id),reference:p.text(body.reference,250),notes:p.text(body.notes,2000),id:p.id(requestId)});
    await audit(query,req,'fulfilment.processing_recorded',requestId,{reference:body.reference});await notify(query,ticket.RequesterId,requestId,`${ticket.TicketNumber}: processing started.`);
   });res.status(204).end();
@@ -23,7 +71,8 @@ export function fulfilmentRoutes(db,config){
  router.post('/requests/:id/complete',roles('IT'),recentAuth,async(req,res)=>{
   const requestId=uuidParam(req),body=parse(z.object({version,notes:text(2000),confirmedProvisioned:z.literal(true),credentials:z.array(z.object({employeeId:text(40),systemId:id,username:text(150),password:z.string().min(1).max(256)}).strict()).max(300).default([])}).strict(),req.body);
   await db.transaction(async query=>{
-   const ticket=await loadTicket(query,requestId,req.user,{lock:true});assertVersion(ticket,body.version);requireCondition(['Approved','IT processing','HO processing'].includes(ticket.Status),409,'NOT_READY_FOR_COMPLETION');requireCondition(ticket.RequesterId!==req.user.Id&&ticket.SubjectUserId!==req.user.Id,403,'SEPARATION_OF_DUTIES');
+   const ticket=await loadTicket(query,requestId,req.user,{lock:true});assertVersion(ticket,body.version);requireCondition(processingStates.includes(ticket.Status),409,'NOT_READY_FOR_COMPLETION');requireCondition(ticket.RequesterId!==req.user.Id&&ticket.SubjectUserId!==req.user.Id,403,'SEPARATION_OF_DUTIES');
+   await requireEmailDraftsSent(query,requestId);
    const items=(await query('SELECT i.*,rp.UserId,rp.EmployeeId,rp.Name,rp.BranchId,rp.DepartmentId FROM dbo.RequestItems i JOIN dbo.RequestPeople rp ON rp.Id=i.PersonId WHERE i.RequestId=@id',{id:p.id(requestId)})).recordset;
    const needsCredentials=!['employee-deactivate','system-deactivate','mailing-group','auto-forward'].includes(ticket.TypeCode);
    if(needsCredentials)requireCondition(items.every(item=>body.credentials.some(credential=>credential.employeeId===item.EmployeeId&&credential.systemId===item.SystemId)),400,'CREDENTIALS_INCOMPLETE');

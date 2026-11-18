@@ -37,12 +37,14 @@ Open each file from this backend's `sql` folder in SSMS. Review it, then execute
 | 5 | [005-reset-unlock-workflow.sql](sql/005-reset-unlock-workflow.sql) | Updates the reset/unlock template to CITO-only approval. Required for existing installations; safe on fresh installs. |
 | 6 | [006-request-display-names.sql](sql/006-request-display-names.sql) | Renames reset to Unlock / Reset and movement to Branch / Department Transfer, preserving type codes and history. |
 | 7 | [007-separate-drive-requests.sql](sql/007-separate-drive-requests.sql) | Names I Drive / S Drive Access and N Drive Access separately, and adds the S Drive system. |
+| 8 | [008-system-email-templates.sql](sql/008-system-email-templates.sql) | Adds system email templates, optional group approval overrides and per-ticket email drafts. |
+| 9 | [009-service-email-templates.sql](sql/009-service-email-templates.sql) | Adds service-specific templates and service-wide defaults. |
 
-The scripts use database name `CBC_UIDMS`. If you change that name, update the `USE`/database references consistently in **all four SQL files**, and change `DB_NAME` in your environment.
+The scripts use database name `CBC_UIDMS`. If you change that name, update the database references in the SQL scripts and set `DB_NAME` in your environment.
 
 These scripts do not import demo employees, browser passwords, mock requests or mock access grants. Seeded organization names and workflows should be reviewed against your bank's actual policy before live use. `003` preserves existing workflow definitions and does not silently replace them on a rerun. It refreshes the seed systems' `TransferManaged` categorization; do not rerun it to manage live catalogue customizations without reviewing that effect.
 
-`004` refuses to run with its placeholder password. Set the `@Password` declaration to a unique password of at least 24 characters, paste it only into a local uncommitted execution copy, and keep it in your secret manager. If `uidms_api` already exists, this script **does not reset its existing password**. The login has password policy and expiration enabled; schedule rotation so expiration does not stop the API.
+`004` refuses to run with its placeholder password. Set the `@Password` declaration to a unique password of at least 12 characters, paste it only into a local uncommitted execution copy, and keep it in your secret manager. If `uidms_api` already exists, this script **does not reset its existing password**. The login has password policy and expiration enabled; schedule rotation so expiration does not stop the API.
 
 The application login must not be `sysadmin`, `db_owner`, or the migration/DBA account. The API never automatically creates, drops or migrates your database on startup.
 
@@ -80,7 +82,7 @@ Check the connection and privilege boundary:
 npm.cmd run db:check
 ```
 
-Expected: database `CBC_UIDMS`, schema version `4` after script 007 (`1` for the base schema), nonzero systems/request types, `IsDbOwner=0`, `IsSysadmin=0`, and no update/delete permission on audit events.
+Expected database `CBC_UIDMS`, schema version `6` after script 009, nonzero systems and request types, `IsDbOwner=0`, `IsSysadmin=0`, and no update or delete permission on audit events.
 
 ## 4. Create the first administrator
 
@@ -114,7 +116,17 @@ npm.cmd test
 npm.cmd start
 ```
 
-The development API listens at `http://127.0.0.1:4000`. Liveness is available at `GET /health/live`. Database readiness is checked during startup; a successful liveness response does not replace database monitoring.
+The development API listens at `http://127.0.0.1:4000`. Liveness is available at `GET /health/live`. While the API is running, `GET /health/db` runs a read-only SQL Server query and returns HTTP 200 on success or HTTP 503 if the query fails. The API also checks database readiness during startup.
+
+### System email templates
+
+Open **System Email Templates** from the frontend profile or navigation. The frontend currently uses in-memory sample templates. After portal-wide authentication is connected, the same editor can use the existing API to load and save SQL-backed templates. A system can belong to one template per service. Each service can also have one service-wide template for systems without a match. Existing uncategorized templates remain in SQL for legacy request types. Configure To, CC, a subject and a plain-text body. Use `{{items}}` to list the matching employee, system and role together. `{{systemId}}` resolves to the system catalogue ID in the connected application.
+
+Final approval saves a copy of the draft per configured group, plus a general draft for any systems without a template. IT reviews and sends each draft manually from **Processing drafts**, then records the confirmation. For a ticket approved before migration 008, IT can create the drafts from the ticket screen. Existing draft snapshots retain their content when templates are edited or removed.
+
+Admins can save an optional approval chain per template group and request type. It applies when a ticket is submitted or replaced before review. A mixed-system ticket combines the applicable chains, including the default chain for any systems without an override. Reset/unlock remains CITO-only. Remove a group's approval overrides before deleting the template.
+
+The frontend uses port 4000 on the same hostname in Vite development and same-origin `/api` in a production build. For a separate API origin, set `VITE_UIDMS_API_ORIGIN` at build time and allow the frontend origin in `ALLOWED_ORIGINS`.
 
 For Postman/HTTP testing, include `Origin: http://localhost:5173` and `Content-Type: application/json` on writes. Authenticated writes also need the session cookie and `X-CSRF-Token`. Origin enforcement applies to non-browser clients too. Do not disable it to make a test client work.
 

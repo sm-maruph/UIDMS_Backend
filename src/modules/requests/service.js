@@ -3,8 +3,10 @@ import {p} from '../../core/db.js';
 import {requireCondition} from '../../core/errors.js';
 import {audit,notify} from '../audit/service.js';
 import {publicUser} from '../auth/service.js';
-import {managerRole,assertVersion,assertReview,visibility,actorParams,canReview,workflowRoles,validateJustification} from './policy.js';
+import {managerRole,assertVersion,assertReview,visibility,actorParams,canReview,validateJustification} from './policy.js';
 import {loadTicket,currentStep,ticketSummary} from './repository.js';
+import {approvalPlan} from './system-workflows.js';
+import {createEmailDrafts} from '../fulfilment/system-email.js';
 
 export async function validateCreation(query,body,user){
  validateJustification(body.typeCode,body.justification);
@@ -49,8 +51,7 @@ export async function validateCreation(query,body,user){
   requireCondition(body.branchId!==body.destinationBranchId||body.departmentId!==body.destinationDepartmentId,400,'DESTINATION_UNCHANGED');
  }else requireCondition(!body.subjectUserId&&!body.destinationBranchId&&!body.destinationDepartmentId,400,'UNEXPECTED_MOVEMENT_FIELDS');
  const branchName=lookups.find(row=>row.Id===targetBranch).Name,departmentName=lookups.find(row=>row.Id===targetDepartment).Name;
- const flow=body.typeCode==='reset'?workflowRoles('reset').map((Role,index)=>({Role,Position:index+1})):(await query('SELECT * FROM dbo.WorkflowSteps WHERE TypeCode=@type ORDER BY Position',{type:p.str(body.typeCode,50)})).recordset;
- requireCondition(flow.length,409,'WORKFLOW_NOT_CONFIGURED');
+ const flow=await approvalPlan(query,body);
  return {type,people,flow,targetBranch,targetDepartment,manager:managerRole(branchName,departmentName),subject};
 }
 export async function createTicket(db,req,body){return db.transaction(async query=>{
@@ -108,6 +109,7 @@ export async function decide(db,req,id,body){return db.transaction(async query=>
  const next=(await query('SELECT TOP(1) Position FROM dbo.RequestSteps WHERE RequestId=@id AND Position>@position ORDER BY Position',{id:p.id(id),position:p.int(ticket.CurrentPosition)})).recordset[0];
  const status=body.decision==='reject'?'Rejected':next?'In review':'Approved';
  await query('UPDATE dbo.Requests SET Status=@status,CurrentPosition=@position,UpdatedAt=SYSUTCDATETIME() WHERE Id=@id',{status:p.str(status,30),position:p.int(next&&body.decision==='approve'?next.Position:ticket.CurrentPosition),id:p.id(id)});
+ if(status==='Approved')await createEmailDrafts(query,ticket);
  await audit(query,req,`request.${body.decision}`,id,{position:ticket.CurrentPosition});
  await notify(query,ticket.RequesterId,id,`${ticket.TicketNumber}: ${status}.`);
  return {status};

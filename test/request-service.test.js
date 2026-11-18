@@ -18,7 +18,7 @@ function fixture(){
   if(text.startsWith('SELECT Id,Kind,Name FROM dbo.Lookups'))return {recordset:[{Id:branchId,Kind:'branch',Name:'Dhanmondi Branch'},{Id:departmentId,Kind:'department',Name:'Operations'}]};
   if(text.startsWith('SELECT Id,EmployeeId,Name'))return {recordset:[{...user}]};
   if(text.startsWith('SELECT s.Id'))return {recordset:[{Id:systemId,Name:'ICBS',RoleId:roleId}]};
-  if(text.startsWith('SELECT * FROM dbo.WorkflowSteps'))return {recordset:['Manager','IT','CITO','COO'].map((Role,index)=>({Role,Position:index+1}))};
+  if(text.startsWith('SELECT Role,Position FROM dbo.WorkflowSteps'))return {recordset:['Manager','IT','CITO','COO'].map((Role,index)=>({Role,Position:index+1}))};
   if(text.startsWith('SELECT NEXT VALUE'))return {recordset:[{Value:123}]};
   return {recordset:[]};
  };

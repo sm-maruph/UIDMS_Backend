@@ -11,6 +11,7 @@ import {directoryRoutes} from './modules/directory/routes.js';
 import {requestRoutes} from './modules/requests/routes.js';
 import {queryRoutes} from './modules/queries/routes.js';
 import {fulfilmentRoutes} from './modules/fulfilment/routes.js';
+import {emailTemplateRoutes} from './modules/fulfilment/email-template-routes.js';
 import {dashboardRoutes} from './modules/dashboard/routes.js';
 import {adminRoutes} from './modules/admin/routes.js';
 import {attachmentRoutes} from './modules/attachments/routes.js';
@@ -36,9 +37,17 @@ export function createApp({db,config}){
  app.use(express.json({limit:'512kb',strict:true}));
  const auth=createAuth(db,config);
  app.get('/health/live',(req,res)=>res.json({status:'ok'}));
+ app.get('/health/db',async(req,res)=>{
+  try{
+   await db.query('SELECT 1 AS Healthy');
+  }catch{
+   return res.status(503).json({status:'unavailable',database:'disconnected'});
+  }
+  return res.json({status:'ok',database:'connected'});
+ });
  app.use('/api/auth',authRoutes(db,auth));
  const api=express.Router();api.use(auth.authenticate);
- api.use(directoryRoutes(db));api.use('/requests',requestRoutes(db));api.use('/queries',queryRoutes(db));api.use(fulfilmentRoutes(db,config));api.use(attachmentRoutes(db));api.use(dashboardRoutes(db));api.use('/admin',adminRoutes(db,config));
+ api.use(directoryRoutes(db));api.use('/requests',requestRoutes(db));api.use('/queries',queryRoutes(db));api.use(fulfilmentRoutes(db,config));api.use(emailTemplateRoutes(db));api.use(attachmentRoutes(db));api.use(dashboardRoutes(db));api.use('/admin',adminRoutes(db,config));
  app.use('/api',api);
  app.use((req,res,next)=>next(new HttpError(404,'NOT_FOUND')));
  app.use(errorHandler);
