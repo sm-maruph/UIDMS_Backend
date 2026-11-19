@@ -14,6 +14,8 @@ npm.cmd audit
 
 The SQL integration test is skipped in the normal suite unless explicitly enabled. Do not count a skipped integration test as a passed database test.
 
+Mock-mode tests cover the original fixture identities and beneficiaries, loopback/development guards, production rejection, hashed-password account creation and the normal activation path. For the local data migration, all 16 imported accounts were verified against SQL-backed login, and the CITO request list (42 records), ticket detail and dashboard were verified through HTTP. The importer was rerun to verify that identical sources are skipped without duplication. These checks do not replace the opt-in full SQL lifecycle test.
+
 ## SQL syntax check using SSMS's parser
 
 If SSMS 22 is installed in the usual location:
@@ -24,7 +26,53 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\validate-sql.ps1
 
 For another installation, supply `-ScriptDomPath 'absolute path to Microsoft.SqlServer.TransactSql.ScriptDom.dll'`. This uses Microsoft's SQL Server 2022 parser and **never connects to SQL Server**. It checks grammar, not foreign-key semantics, actual privileges, certificates or execution plans.
 
-## Opt-in SQL lifecycle test
+## Opt-in local request submission check
+
+For a focused request-submission regression check against an already seeded **local development** database:
+
+```powershell
+$env:UIDMS_SQL_REQUEST_SMOKE = 'true'
+node --env-file=.env --test test/request-creation.sql.test.js
+Remove-Item Env:UIDMS_SQL_REQUEST_SMOKE
+```
+
+This check requires local mock mode and the imported `BNGL6191` account. It exercises login, CSRF-protected request POSTs, SQL approval routing, and ticket reads for upgrade, new ID and unlock/reset requests. All table changes are rolled back, including test sessions and audit entries; SQL ticket sequence values can still advance. It does not change existing mock records. The normal test suite skips this check.
+
+## Opt-in local profile editing check
+
+For profile editing, the equivalent focused local mock check is:
+
+```powershell
+$env:UIDMS_SQL_PROFILE_SMOKE = 'true'
+node --env-file=.env --test test/profile.sql.test.js
+Remove-Item Env:UIDMS_SQL_PROFILE_SMOKE
+```
+
+It verifies designation, signature, access additions/removals, retained grant provenance and stale-version rejection through HTTP against SQL Server. All changes, including test sessions, are rolled back. It requires the local mock dataset and refuses non-development configuration.
+
+## Hybrid authentication check with SQL
+
+The current AD-only deployment uses this rollback-only check:
+
+```powershell
+$env:UIDMS_SQL_AD_ONLY_SMOKE = 'true'
+node --env-file=.env --test test/ad-only.sql.test.js
+Remove-Item Env:UIDMS_SQL_AD_ONLY_SMOKE
+```
+
+It injects a directory verifier, matches the existing Super Admin by the verified employee ID, completes MFA and checks its SQL session/role while preserving IDs, requests and grants. It verifies rejection of local login/sessions. Changes roll back; rate counters use memory to avoid post-response writes sharing the rollback connection. This does not verify real AD connectivity.
+
+The older hybrid check below requires an unconverted mock database and applies only to testing that legacy mode:
+
+```powershell
+$env:UIDMS_SQL_HYBRID_SMOKE = 'true'
+node --env-file=.env --test test/hybrid-auth.sql.test.js
+Remove-Item Env:UIDMS_SQL_HYBRID_SMOKE
+```
+
+This local-development check uses an injected directory verifier, not a real AD connection. It verifies mock-to-real linking, removal of the shared password, AD MFA enrollment/verification, provider persistence on sessions and disabling an established provider. It uses the seeded `MOCK001` profile and rolls back all changes. It is skipped during the ordinary suite. Actual directory connectivity is separately checked with `npm run ad:check -- --account YOUR_AD_LOGON_NAME` after configuration.
+
+## Full SQL lifecycle in a disposable database
 
 Use a **new disposable empty database**, never your real `CBC_UIDMS`. The test refuses names not starting `CBC_UIDMS_TEST_`, refuses a production environment and refuses a database containing user tables. It does not drop/truncate a database or tables.
 
@@ -62,3 +110,17 @@ The database is left behind for inspection whether the test passes or fails. A D
 6. Test bank-specific provisioning, backups/restores, key custody and monitoring.
 
 Dependency advisories change. Re-run the online audit for each release; a clean result is time-bound and is not equivalent to source review or penetration testing.
+
+## Verified AD employee self-enrollment
+
+After installing migration 013, run this rollback-only test against the local development database:
+
+```powershell
+$env:UIDMS_SQL_ENROLLMENT_SMOKE='true'
+node --env-file=.env --test test/ad-enrollment.sql.test.js
+Remove-Item Env:UIDMS_SQL_ENROLLMENT_SMOKE
+```
+
+It injects a directory verifier without real AD passwords and verifies new-user enrollment, optional email for multiple employees, hashed/expired/single-use tokens, rejection of role/employee-ID overrides, active organization validation, duplicate email rejection, actual TOTP verification, notification delivery without email, and denial of administrator actions. All fixture users, sessions, identities and audit records are rolled back. The normal test suite includes proof-validation and request-schema tests.
+
+The browser flow was checked with isolated API fixtures: AD login to the existing progress wizard, Back navigation, required organization fields, optional email, recovery from a save error, QR/MFA, and the User dashboard on desktop and mobile. The browser fixtures never contacted live AD or wrote to the database.

@@ -2,19 +2,23 @@ import {Router} from 'express';
 import {p} from '../../core/db.js';
 import {z,id,text,parse,uuidParam,pageSchema} from '../../core/validation.js';
 import {requireCondition} from '../../core/errors.js';
-import {token,digest} from '../../core/crypto.js';
+import {token,digest,hashPassword} from '../../core/crypto.js';
+import {localMockRequest} from '../auth/mock-policy.js';
 import {roles,recentAuth,publicUser,userColumns} from '../auth/service.js';
 import {audit} from '../audit/service.js';
 import {validFile} from '../attachments/routes.js';
 import {version} from '../requests/schemas.js';
 import {workflowRoles} from '../requests/policy.js';
+import {profileRoutes} from './profile.js';
+import {localLoginEnabled} from '../auth/providers.js';
+import {optionalEmailSchema} from '../auth/directory-onboarding.js';
 
 const roleSchema=z.enum(['User','Branch manager','Department head','IT','CITO','COO','HR','Platform Admin','Super Admin']);
-const profileSchema=z.object({employeeId:text(40).regex(/^[A-Za-z0-9_-]+$/),name:text(160),email:z.email().max(254).transform(value=>value.toLowerCase()),role:roleSchema,branchId:id,departmentId:id,designationId:id.nullable().optional()}).strict();
+const profileSchema=z.object({employeeId:text(40).regex(/^[A-Za-z0-9_-]+$/),name:text(160),email:optionalEmailSchema,role:roleSchema,branchId:id,departmentId:id,designationId:id.nullable().optional()}).strict();
 const isAdmin=user=>['Platform Admin','Super Admin'].includes(user.Role);
-export function directoryRoutes(db){
+export function directoryRoutes(db,config){
  const router=Router();
- router.get('/profile',async(req,res)=>res.json({user:publicUser(req.user)}));
+ router.use(profileRoutes(db,config));
  router.put('/profile/signature',async(req,res)=>{
   const body=parse(z.object({base64:z.string().max(349528).regex(/^[A-Za-z0-9+/]+={0,2}$/)}).strict(),req.body);
   const bytes=Buffer.from(body.base64,'base64');requireCondition(bytes.length<=262144&&validFile(bytes,'image/png'),400,'PNG_SIGNATURE_REQUIRED');
@@ -25,7 +29,7 @@ export function directoryRoutes(db){
  });
  router.get('/lookups',async(req,res)=>{
   const result=await db.query(`SELECT Id,Kind,Name FROM dbo.Lookups WHERE Active=1 ORDER BY Kind,Name; SELECT Id,Name,TransferManaged FROM dbo.Systems WHERE Active=1 ORDER BY Name; SELECT sr.Id,sr.SystemId,sr.Name FROM dbo.SystemRoles sr JOIN dbo.Systems s ON s.Id=sr.SystemId WHERE sr.Active=1 AND s.Active=1 ORDER BY sr.Name; SELECT Code,Name,IncludesHr,InitiatorRoles FROM dbo.RequestTypes WHERE Active=1; SELECT TypeCode,Position,Role FROM dbo.WorkflowSteps ORDER BY TypeCode,Position; SELECT g.Id,g.Name,g.Email,CAST(CASE WHEN EXISTS(SELECT 1 FROM dbo.MailingGroupMembers m WHERE m.GroupId=g.Id AND m.UserId=@actor) THEN 1 ELSE 0 END AS bit) AS IsMember FROM dbo.MailingGroups g WHERE g.Active=1`,{actor:p.id(req.user.Id)});
-  res.json({organizations:result.recordsets[0],systems:result.recordsets[1],systemRoles:result.recordsets[2],requestTypes:result.recordsets[3].map(type=>({...type,InitiatorRoles:JSON.parse(type.InitiatorRoles)})),workflowSteps:result.recordsets[4],mailingGroups:result.recordsets[5]});
+  res.json({organizations:result.recordsets[0],systems:result.recordsets[1],systemRoles:result.recordsets[2],requestTypes:result.recordsets[3].map(type=>({...type,InitiatorRoles:JSON.parse(type.InitiatorRoles)})),workflowSteps:result.recordsets[4],mailingGroups:result.recordsets[5],mockLoginEnabled:localMockRequest(config,req)});
  });
  router.get('/users',async(req,res)=>{
   const filter=parse(pageSchema.extend({search:text(100,0).default('')}).strict(),req.query);
@@ -44,14 +48,16 @@ export function directoryRoutes(db){
   for(const [value,kind] of [[body.branchId,'branch'],[body.departmentId,'department'],[body.designationId,'designation']])if(value){const found=await query('SELECT Id FROM dbo.Lookups WHERE Id=@id AND Kind=@kind AND Active=1',{id:p.id(value),kind:p.str(kind,20)});requireCondition(found.recordset.length,400,'INVALID_LOOKUP');}
  }
  router.post('/users',roles('Platform Admin','Super Admin'),recentAuth,async(req,res)=>{
-  const body=parse(profileSchema,req.body);requireCondition(body.role!=='Super Admin'||req.user.Role==='Super Admin',403,'SUPER_ADMIN_REQUIRED');
+  const body=parse(profileSchema.extend({mock:z.boolean().default(false)}),req.body);requireCondition(body.role!=='Super Admin'||req.user.Role==='Super Admin',403,'SUPER_ADMIN_REQUIRED');
+  if(body.mock)requireCondition(localMockRequest(config,req),403,'MOCK_LOGIN_DISABLED');
+  const password=body.mock?await hashPassword('1234'):null;
   const activationToken=token();
   const result=await db.transaction(async query=>{
    await validateLookups(query,body);
-   const created=(await query('INSERT dbo.Users(EmployeeId,Name,Email,Role,BranchId,DepartmentId,DesignationId) OUTPUT inserted.Id VALUES(@employee,@name,@email,@role,@branch,@department,@designation)',{employee:p.text(body.employeeId,40),name:p.text(body.name,160),email:p.text(body.email,254),role:p.text(body.role,40),branch:p.id(body.branchId),department:p.id(body.departmentId),designation:p.id(body.designationId)})).recordset[0];
-   await query("INSERT dbo.AuthChallenges(TokenHash,UserId,Purpose,ExpiresAt) VALUES(@hash,@user,'activation',DATEADD(hour,24,SYSUTCDATETIME()))",{hash:p.str(digest(activationToken),64),user:p.id(created.Id)});
-   await audit(query,req,'user.created',created.Id,{role:body.role});return created;
-  });res.status(201).json({id:result.Id,activationToken,expiresInHours:24});
+   const created=(await query('INSERT dbo.Users(EmployeeId,Name,Email,Role,BranchId,DepartmentId,DesignationId,PasswordHash,IsDemo) OUTPUT inserted.Id VALUES(@employee,@name,@email,@role,@branch,@department,@designation,@password,@demo)',{employee:p.text(body.employeeId,40),name:p.text(body.name,160),email:p.text(body.email,254),role:p.text(body.role,40),branch:p.id(body.branchId),department:p.id(body.departmentId),designation:p.id(body.designationId),password:p.str(password,300),demo:p.bit(body.mock)})).recordset[0];
+   if(!body.mock&&localLoginEnabled(config))await query("INSERT dbo.AuthChallenges(TokenHash,UserId,Purpose,ExpiresAt) VALUES(@hash,@user,'activation',DATEADD(hour,24,SYSUTCDATETIME()))",{hash:p.str(digest(activationToken),64),user:p.id(created.Id)});
+   await audit(query,req,body.mock?'mock.user_created':'user.created',created.Id,{role:body.role});return created;
+  });res.status(201).json(body.mock?{id:result.Id,mock:true}:localLoginEnabled(config)?{id:result.Id,activationToken,expiresInHours:24}:{id:result.Id,authentication:'ad'});
  });
  router.patch('/users/:id',roles('Platform Admin','Super Admin'),recentAuth,async(req,res)=>{
   const userId=uuidParam(req),body=parse(profileSchema.omit({employeeId:true}).extend({active:z.boolean(),version}).strict(),req.body);

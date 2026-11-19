@@ -23,12 +23,14 @@ IF SUSER_ID(N'uidms_api') IS NULL
 USE CBC_UIDMS;
 IF DATABASE_PRINCIPAL_ID(N'uidms_runtime') IS NULL CREATE ROLE uidms_runtime;
 IF DATABASE_PRINCIPAL_ID(N'uidms_api') IS NULL CREATE USER uidms_api FOR LOGIN uidms_api;
+ELSE ALTER USER uidms_api WITH LOGIN=uidms_api;
 ALTER ROLE uidms_runtime ADD MEMBER uidms_api;
 GRANT SELECT ON SCHEMA::dbo TO uidms_runtime;
 GRANT INSERT,UPDATE ON SCHEMA::dbo TO uidms_runtime;
 GRANT UPDATE ON OBJECT::dbo.TicketSequence TO uidms_runtime;
 GRANT DELETE ON dbo.Sessions TO uidms_runtime;
 GRANT DELETE ON dbo.AuthChallenges TO uidms_runtime;
+IF OBJECT_ID(N'dbo.AdEnrollmentChallenges') IS NOT NULL GRANT DELETE ON dbo.AdEnrollmentChallenges TO uidms_runtime;
 GRANT DELETE ON dbo.RequestItems TO uidms_runtime;
 GRANT DELETE ON dbo.RequestPeople TO uidms_runtime;
 GRANT DELETE ON dbo.RequestSteps TO uidms_runtime;

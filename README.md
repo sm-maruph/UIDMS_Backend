@@ -1,6 +1,6 @@
 # CBC UIDMS backend
 
-A modular Node.js/Express API for the existing React portal, using Microsoft SQL Server. The frontend has **not** been connected or modified as part of this backend task.
+A modular Node.js/Express API for the React portal, using Microsoft SQL Server. The frontend loads its directory, requests and queries through the API.
 
 Start with the SSMS steps below. Further documentation:
 
@@ -8,6 +8,8 @@ Start with the SSMS steps below. Further documentation:
 - [Frontend data mapping and workflow rules](docs/DATA-MODEL.md)
 - [Security controls, deployment and VAPT checklist](docs/SECURITY.md)
 - [Verification and SQL integration tests](docs/TESTING.md)
+- [Local mock users, password 1234, and data import](docs/MOCK-DATA.md)
+- [AD-only sign-in and existing database roles](docs/AD-SETUP.md)
 
 ## Requirements
 
@@ -40,10 +42,13 @@ Open each file from this backend's `sql` folder in SSMS. Review it, then execute
 | 8 | [008-system-email-templates.sql](sql/008-system-email-templates.sql) | Adds system email templates, optional group approval overrides and per-ticket email drafts. |
 | 9 | [009-service-email-templates.sql](sql/009-service-email-templates.sql) | Adds service-specific templates and service-wide defaults. |
 | 10 | [010-directory-identities.sql](sql/010-directory-identities.sql) | Links an authenticated directory system ID to a UIDMS user profile. |
+| 11 | [011-mock-data-support.sql](sql/011-mock-data-support.sql) | Adds development-account markers and import provenance; advances schema version to 8. |
+| 12 | [012-hybrid-auth.sql](sql/012-hybrid-auth.sql) | Records local/AD session and MFA provenance; advances schema version to 9. |
+| 13 | [013-ad-self-enrollment.sql](sql/013-ad-self-enrollment.sql) | Verified AD employee enrollment, optional unique email, temporary hashed proofs; schema version 10. |
 
 The scripts use database name `CBC_UIDMS`. If you change that name, update the database references in the SQL scripts and set `DB_NAME` in your environment.
 
-These scripts do not import demo employees, browser passwords, mock requests or mock access grants. Seeded organization names and workflows should be reviewed against your bank's actual policy before live use. `003` preserves existing workflow definitions and does not silently replace them on a rerun. It refreshes the seed systems' `TransferManaged` categorization; do not rerun it to manage live catalogue customizations without reviewing that effect.
+These SQL scripts do not automatically import demo employees or requests. For local development, the separate opt-in [mock importer](docs/MOCK-DATA.md) imports all authored frontend fixtures and an extra test account. Seeded organization names and workflows should be reviewed against your bank's actual policy before live use. `003` preserves existing workflow definitions and does not silently replace them on a rerun. It refreshes the seed systems' `TransferManaged` categorization; do not rerun it to manage live catalogue customizations without reviewing that effect.
 
 `004` refuses to run with its placeholder password. Set the `@Password` declaration to a unique password of at least 12 characters, paste it only into a local uncommitted execution copy, and keep it in your secret manager. If `uidms_api` already exists, this script **does not reset its existing password**. The login has password policy and expiration enabled; schedule rotation so expiration does not stop the API.
 
@@ -83,13 +88,15 @@ Check the connection and privilege boundary:
 npm.cmd run db:check
 ```
 
-Expected database `CBC_UIDMS`, schema version `7` after script 010, nonzero systems and request types, `IsDbOwner=0`, `IsSysadmin=0`, and no update or delete permission on audit events.
+Expected database `CBC_UIDMS`, schema version `9` after script 012, nonzero systems and request types, `IsDbOwner=0`, `IsSysadmin=0`, and no update or delete permission on audit events.
 
-For future AD integration, use the verified, canonical system ID from the server-side directory adapter to call `directoryProfile` and `completeDirectoryProfile`. Existing email or employee ID matches require an IT-managed link. New self-enrolled profiles receive the `User` role. The directory adapter and its public sign-in flow are pending.
+The current deployment uses AD-only sign-in. After directory verification, the returned employee ID matches an existing SQL user and retains that user's role/access. Local passwords and mock login have been retired without deleting business records. Follow the [AD-only setup guide](docs/AD-SETUP.md).
 
 ## 4. Create the first administrator
 
-No default administrator password is embedded in SQL or source. Bootstrap is allowed only before the first Super Admin exists.
+For a real deployment, bootstrap is allowed only before the first Super Admin exists. The optional local mock import instead provides `BD06653` / `1234` as a marked development account; see [mock setup](docs/MOCK-DATA.md). Do not use mock authentication for production.
+
+The simplest first-time setup is to run `npm.cmd run admin:bootstrap` from an interactive PowerShell or Windows Terminal. It prompts for your employee ID, full name, work email, and a hidden portal passphrase. Use this portal account on the sign-in screen; `uidms_api` and `DB_PASSWORD` are database connection credentials, not portal credentials. If your Git Bash/MSYS terminal does not support native Node TTY input, run this command in PowerShell instead. The environment-variable method below also remains supported.
 
 Use a secure prompt so the passphrase is not written into PowerShell history:
 

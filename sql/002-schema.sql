@@ -20,7 +20,7 @@ CREATE TABLE dbo.Users(
  BranchId uniqueidentifier NULL REFERENCES dbo.Lookups(Id),
  DepartmentId uniqueidentifier NULL REFERENCES dbo.Lookups(Id),
  DesignationId uniqueidentifier NULL REFERENCES dbo.Lookups(Id),
- PasswordHash varchar(300) NULL, Active bit NOT NULL DEFAULT 1,
+ PasswordHash varchar(300) NULL, Active bit NOT NULL DEFAULT 1, IsDemo bit NOT NULL DEFAULT 0,
  MfaSecret varchar(500) NULL, MfaLastCounter bigint NULL,
  FailedAttempts int NOT NULL DEFAULT 0, MfaFailedAttempts int NOT NULL DEFAULT 0, LockedUntil datetime2(3) NULL,
  Signature varbinary(max) NULL, SignatureContentType varchar(30) NULL,
@@ -30,6 +30,7 @@ CREATE TABLE dbo.Users(
 );
 CREATE TABLE dbo.Sessions(
  TokenHash char(64) NOT NULL PRIMARY KEY, UserId uniqueidentifier NOT NULL REFERENCES dbo.Users(Id),
+ AuthProvider varchar(10) NOT NULL DEFAULT 'local' CHECK(AuthProvider IN ('local','ad')),
  CsrfHash char(64) NOT NULL, CreatedAt datetime2(3) NOT NULL DEFAULT SYSUTCDATETIME(),
  LastSeenAt datetime2(3) NOT NULL DEFAULT SYSUTCDATETIME(), ExpiresAt datetime2(3) NOT NULL,
  RevokedAt datetime2(3) NULL, Ip varchar(64) NOT NULL, UserAgent nvarchar(300) NULL
@@ -38,6 +39,7 @@ CREATE INDEX IX_Sessions_User ON dbo.Sessions(UserId,RevokedAt,ExpiresAt);
 CREATE TABLE dbo.AuthChallenges(
  TokenHash char(64) NOT NULL PRIMARY KEY, UserId uniqueidentifier NOT NULL REFERENCES dbo.Users(Id),
  Purpose varchar(20) NOT NULL CHECK(Purpose IN ('mfa','activation')),
+ AuthProvider varchar(10) NOT NULL DEFAULT 'local' CHECK(AuthProvider IN ('local','ad')),
  PendingMfaSecret varchar(500) NULL, Attempts int NOT NULL DEFAULT 0,
  ExpiresAt datetime2(3) NOT NULL, CreatedAt datetime2(3) NOT NULL DEFAULT SYSUTCDATETIME()
 );

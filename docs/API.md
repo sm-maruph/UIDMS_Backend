@@ -1,6 +1,6 @@
-# API contract and later frontend connection
+# API contract and frontend connection
 
-Base path: `/api`. The API returns JSON, except signature images and clean attachment downloads. It is not wired into the current frontend.
+Base path: `/api`. The API returns JSON, except signature images and clean attachment downloads. The current frontend uses this API for database-backed data and authentication.
 
 All request bodies use strict validation. Unknown top-level properties are rejected. JSON body limit: 512 KiB. All collection endpoints shown with pagination accept `page` (default 1) and `pageSize` (default 20, maximum 100).
 
@@ -8,7 +8,20 @@ Most ticket mutations require `version`, a 16-character hexadecimal SQL `rowvers
 
 ## Authentication walkthrough
 
-The current mock frontend's role/account selector is not an authentication mechanism. Replace it with this flow when you connect the frontend.
+The account selector only selects an ID; the server verifies its password and creates the session. Real accounts use the following MFA flow. The explicitly enabled [local mock mode](MOCK-DATA.md) lets marked test accounts sign in directly with password `1234`.
+
+`GET /auth/options` returns `{mockLogin, localLogin, adLogin}`; the current AD-only values are `{false, false, true}`. Login defaults to `provider: "ad"`, and explicit local login is rejected. After AD verification, the directory-returned employee ID resolves the existing active SQL profile and its current role/access. First login pins the immutable identity; conflicting existing pins are rejected. Unknown profiles receive `{onboardingRequired:true,onboardingToken,profile:{employeeId,name,email},expiresInSeconds:600}` and complete the profile flow below before MFA. This is not a session. Session responses include the provider, preserved through MFA. See [AD setup](AD-SETUP.md).
+
+First-time AD profile setup (after `POST /auth/login`):
+
+| Method | Path | Body / response |
+| --- | --- | --- |
+| POST | `/auth/onboarding/options` | `{onboardingToken}` returns `{organizations}` containing active branch/department IDs and names only. |
+| POST | `/auth/onboarding/complete` | `{onboardingToken,name,branchId,departmentId,email?}` creates the fixed User profile and returns HTTP 201 with the usual MFA `challenge`. Email may be omitted, empty, or null. Employee ID, directory identity, role, and access fields are rejected. |
+
+The token is hashed in SQL, expires in ten minutes, and is single-use on completion. Keep it in memory only. New profiles have no local password or access grants. Existing profiles are not overwritten. Invalid/expired/consumed proofs return `401 ENROLLMENT_EXPIRED`; conflicting profiles/email return `409 PROFILE_ALREADY_EXISTS`. No session cookie is issued until successful MFA verification.
+
+`GET /auth/mock-directory` lists active marked test accounts only for an allowed local mock client; otherwise it returns 404. `POST /users` accepts optional `mock: true` for a recently authenticated administrator in local mock mode. It returns `{id, mock: true}` and sets a separately salted `1234` password hash. Ordinary user creation returns an activation token instead.
 
 1. `POST /auth/login`:
 
@@ -34,6 +47,8 @@ The current mock frontend's role/account selector is not an authentication mecha
 
    On success, the server sets its HttpOnly session cookie and returns `{user, csrfToken}`. Keep only the CSRF token and display profile in memory. Session tokens never go into localStorage. MFA codes cannot be replayed once used.
 
+   MFA errors include readable instructions: `401 MFA_INVALID` means an incorrect/expired code; `401 MFA_CODE_USED` asks the user to wait for the next code. `401 CHALLENGE_INVALID` and `401 MFA_ATTEMPTS_EXCEEDED` require a fresh sign-in; `401 MFA_LOCKED` explains the 15-minute wait. `400 MFA_ENROLLMENT_REQUIRED` asks the user to scan the QR first. Failure counters and lockouts are still recorded before returning a code error. The frontend displays these messages in an alert, marks retryable code errors on the input, and offers **Back to sign in** for expired/locked attempts.
+
 4. On page reload, call `GET /auth/session` with credentials to recover the profile and receive a new CSRF token. This rotates the session's CSRF token; synchronize it between tabs if your UI keeps several tabs open. If a tab receives `CSRF_INVALID`, refresh the token with this endpoint before a deliberate retry. Do not automatically replay a non-idempotent submission without checking whether it succeeded.
 
 5. Include `X-CSRF-Token` on every authenticated write. Include the configured exact `Origin` header on writes in Postman/scripts. Browser fetch supplies Origin automatically.
@@ -42,7 +57,7 @@ The current mock frontend's role/account selector is not an authentication mecha
 
 One concurrent session is allowed per account. A new successful login revokes previous sessions. Idle timeout defaults to 15 minutes; absolute lifetime is 8 hours. Sensitive administrative operations and credential consumption require a login in the last 10 minutes. Sign in again when `REAUTHENTICATION_REQUIRED` is returned.
 
-Activation: `POST /auth/activate` accepts `{token,password}`. The token is the single-use token returned to an administrator when they created the account; the response starts MFA enrollment. The API has no public registration or anonymous role assignment.
+Activation: `POST /auth/activate` accepts `{token,password}` only when local login is enabled. It is disabled in this AD-only deployment. Self-enrollment requires a successful AD login, and new profiles always receive the User role.
 
 Password change: `POST /auth/password` accepts `{currentPassword,newPassword}`. It revokes all sessions, including the caller. Sign in again. Passphrases must be 15–128 characters. Bootstrap/admin recovery are controlled operational processes, not anonymous reset endpoints.
 
@@ -78,13 +93,14 @@ Authenticated POST/PUT/PATCH/DELETE calls with no domain payload should still se
 
 | Method | Path | Body / behavior | Authorization |
 | --- | --- | --- | --- |
-| GET | `/profile` | Current safe profile | Signed in |
+| GET | `/profile` | Current safe profile, current `access` grants, and `canEditAccess` capability | Signed in |
+| PATCH | `/profile` | `{version,designationId,access?,signatureBase64?}`; atomic self-profile update | Self; access editing only for marked local mock accounts; audited |
 | GET | `/profile/signature` | Current user's PNG signature | Self |
 | PUT | `/profile/signature` | `{base64}` PNG, max 256 KiB | Self; audited |
 | GET | `/lookups` | Organization IDs, systems/roles, request types/workflows, mailing groups | Signed in |
 | GET | `/users?page=1&pageSize=20&search=...` | Paginated directory | Self, own managerial scope, operations, or admin scope |
 | GET | `/users/:id/access` | Current normalized system access grants | Same directory scope |
-| POST | `/users` | New profile; returns one-time activation token | Platform Admin/Super Admin; fresh login |
+| POST | `/users` | New profile; AD-only mode returns `{id,authentication:"ad"}` without a local credential or token | Platform Admin/Super Admin; fresh login |
 | PATCH | `/users/:id` | Profile, role, `active`, `version`; employee ID immutable | Admin; no self-administration; Super Admin needed for Super Admin accounts |
 | POST | `/lookups` | `{kind,name}`; kind branch/department/designation | Admin; fresh login |
 | PATCH | `/lookups/:id` | `{name,active}` | Admin; fresh login |
@@ -247,5 +263,5 @@ Errors have `{error:{code,message,requestId}}`. Typical status codes:
 - `409`: stale version, state conflict, duplicate entry or attachment quarantine.
 - `413`: oversized body.
 - `415`: unsupported content type.
-- `429`: rate limit; honor retry headers.
+- `429`: rate limit; honor `Retry-After` or `error.retryAfterSeconds`. The login failure quota applies to unsuccessful credential POSTs, excluding ordinary setup/session reads, successful sign-in/MFA and infrastructure errors. The overall API request cap still applies to all endpoints. Do not automatically resubmit passwords after a cooldown.
 - `500`: generic error with correlation ID; internal SQL and stack traces are not returned.

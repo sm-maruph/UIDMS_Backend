@@ -30,14 +30,14 @@ export async function approvalPlan(query,body){
  const baseline=(await query('SELECT Role,Position FROM dbo.WorkflowSteps WHERE TypeCode=@type ORDER BY Position',{type})).recordset;
  requireCondition(baseline.length,409,'WORKFLOW_NOT_CONFIGURED');
  const systemIds=[...new Set(body.items.map(item=>item.systemId))];
- const overrides=(await query(`SELECT CONVERT(uniqueidentifier,selected.value) AS SystemId,rule.TemplateId,rule.Steps
+ const overrides=(await query(`SELECT CONVERT(uniqueidentifier,selected.value) AS SystemId,approvalRule.TemplateId,approvalRule.Steps
   FROM OPENJSON(@systems) selected CROSS APPLY (
    SELECT TOP (1) o.TemplateId,o.Steps FROM dbo.SystemApprovalOverrides o
    JOIN dbo.SystemEmailTemplates t ON t.Id=o.TemplateId
    LEFT JOIN dbo.SystemEmailTemplateSystems ts ON ts.TemplateId=t.Id AND ts.SystemId=CONVERT(uniqueidentifier,selected.value)
    WHERE o.TypeCode=@type AND (t.Category=@category OR t.Category='') AND (ts.SystemId IS NOT NULL OR t.IsServiceDefault=1)
    ORDER BY CASE WHEN t.Category=@category THEN 0 ELSE 1 END,t.IsServiceDefault,t.Id
-  ) rule`,{type,category:p.str(categoryForType(body.typeCode),32),systems:p.json(systemIds)})).recordset;
+  ) approvalRule`,{type,category:p.str(categoryForType(body.typeCode),32),systems:p.json(systemIds)})).recordset;
  if(!overrides.length)return baseline;
  const chains=new Map(overrides.map(row=>[row.TemplateId,JSON.parse(row.Steps)]));
  const defaults=baseline.map(step=>step.Role);

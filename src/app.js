@@ -16,8 +16,9 @@ import {dashboardRoutes} from './modules/dashboard/routes.js';
 import {adminRoutes} from './modules/admin/routes.js';
 import {attachmentRoutes} from './modules/attachments/routes.js';
 import {SqlRateLimitStore} from './core/rate-limit-store.js';
+import {authRateLimitOptions,rateLimitResponse} from './core/auth-rate-limit.js';
 
-export function createApp({db,config}){
+export function createApp({db,config,directory}){
  const app=express();app.disable('x-powered-by');app.set('query parser','simple');
  app.set('trust proxy',config.TRUST_PROXY==='false'?false:config.TRUST_PROXY.split(',').map(value=>value.trim()));
  app.use((req,res,next)=>{req.id=randomUUID();res.set('X-Request-ID',req.id);res.set('Cache-Control','no-store');next();});
@@ -29,13 +30,13 @@ export function createApp({db,config}){
   if(!['GET','HEAD','OPTIONS'].includes(req.method)&&(!origin||!config.origins.includes(origin)))return next(new HttpError(403,'ORIGIN_REQUIRED'));
   next();
  });
- app.use(cors({origin:config.origins,credentials:true,methods:['GET','POST','PUT','PATCH','DELETE','OPTIONS'],allowedHeaders:['Content-Type','X-CSRF-Token'],exposedHeaders:['X-Request-ID'],maxAge:600}));
- app.use('/api',rateLimit({windowMs:60000,limit:180,store:config.NODE_ENV==='test'?undefined:new SqlRateLimitStore(db,'api'),standardHeaders:'draft-8',legacyHeaders:false,message:{error:{code:'RATE_LIMITED',message:'Too many requests.'}}}));
- app.use('/api/auth',rateLimit({windowMs:15*60000,limit:30,store:config.NODE_ENV==='test'?undefined:new SqlRateLimitStore(db,'auth'),standardHeaders:'draft-8',legacyHeaders:false,message:{error:{code:'AUTH_RATE_LIMITED',message:'Try again later.'}}}));
+ app.use(cors({origin:config.origins,credentials:true,methods:['GET','POST','PUT','PATCH','DELETE','OPTIONS'],allowedHeaders:['Content-Type','X-CSRF-Token'],exposedHeaders:['X-Request-ID','Retry-After','RateLimit','RateLimit-Policy'],maxAge:600}));
+ app.use('/api',rateLimit({windowMs:60000,limit:180,store:config.NODE_ENV==='test'?undefined:new SqlRateLimitStore(db,'api'),standardHeaders:'draft-8',legacyHeaders:false,handler:rateLimitResponse('RATE_LIMITED','Too many requests.')}));
+ app.use('/api/auth',rateLimit(authRateLimitOptions(db,config)));
  app.use(cookieParser());
  app.use((req,res,next)=>{if(!['GET','HEAD','OPTIONS'].includes(req.method)&&!req.is('application/json'))return next(new HttpError(415,'JSON_REQUIRED'));next();});
  app.use(express.json({limit:'512kb',strict:true}));
- const auth=createAuth(db,config);
+ const auth=createAuth(db,config,{directory});
  app.get('/health/live',(req,res)=>res.json({status:'ok'}));
  app.get('/health/db',async(req,res)=>{
   try{
@@ -45,9 +46,9 @@ export function createApp({db,config}){
   }
   return res.json({status:'ok',database:'connected'});
  });
- app.use('/api/auth',authRoutes(db,auth));
+ app.use('/api/auth',authRoutes(db,auth,config));
  const api=express.Router();api.use(auth.authenticate);
- api.use(directoryRoutes(db));api.use('/requests',requestRoutes(db));api.use('/queries',queryRoutes(db));api.use(fulfilmentRoutes(db,config));api.use(emailTemplateRoutes(db));api.use(attachmentRoutes(db));api.use(dashboardRoutes(db));api.use('/admin',adminRoutes(db,config));
+ api.use(directoryRoutes(db,config));api.use('/requests',requestRoutes(db));api.use('/queries',queryRoutes(db));api.use(fulfilmentRoutes(db,config));api.use(emailTemplateRoutes(db));api.use(attachmentRoutes(db));api.use(dashboardRoutes(db));api.use('/admin',adminRoutes(db,config));
  app.use('/api',api);
  app.use((req,res,next)=>next(new HttpError(404,'NOT_FOUND')));
  app.use(errorHandler);

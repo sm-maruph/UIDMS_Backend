@@ -5,7 +5,8 @@ import {hashPassword} from '../src/core/crypto.js';
 import {parse,z,text} from '../src/core/validation.js';
 import {passwordSchema} from '../src/modules/auth/routes.js';
 import {audit} from '../src/modules/audit/service.js';
-const input=parse(z.object({employeeId:text(40).regex(/^[A-Za-z0-9_-]+$/),name:text(160),email:z.email().max(254),password:passwordSchema}),{employeeId:process.env.BOOTSTRAP_EMPLOYEE_ID,name:process.env.BOOTSTRAP_NAME,email:process.env.BOOTSTRAP_EMAIL,password:process.env.BOOTSTRAP_PASSWORD});
+import {bootstrapInput} from './bootstrap-input.js';
+const input=parse(z.object({employeeId:text(40).regex(/^[A-Za-z0-9_-]+$/),name:text(160),email:z.email().max(254),password:passwordSchema}),await bootstrapInput());
 delete process.env.BOOTSTRAP_PASSWORD;
 const db=createDatabase(readConfig());
 try{

@@ -23,7 +23,7 @@ test('MFA verification creates session only for a valid code and does not allow 
  const res={cookie:(name,value,options)=>{cookie={name,value,options};},json:value=>{response=value;}};
  await auth.verifyMfa(req,res);assert.equal(response.user.employeeId,'TEST1');assert.equal(cookie.options.httpOnly,true);assert.equal(cookie.options.sameSite,'strict');assert.equal(cookie.value.length,43);
  const insertion=calls.find(call=>call.text.startsWith('INSERT dbo.Sessions'));assert.ok(insertion);assert.notEqual(insertion.params.token.value,cookie.value);assert.equal(insertion.params.token.value,digest(cookie.value));
- await assert.rejects(auth.verifyMfa(req,res),error=>error.code==='MFA_INVALID');
+ await assert.rejects(auth.verifyMfa(req,res),error=>error.code==='MFA_CODE_USED'&&/already been used/.test(error.message));
  assert.ok(calls.some(call=>call.text.includes('MfaFailedAttempts=MfaFailedAttempts+1')));
 });
 

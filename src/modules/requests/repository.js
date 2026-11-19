@@ -6,7 +6,7 @@ export async function loadTicket(query,id,user,{lock=false}={}){
  requireCondition(result.recordset.length,404,'REQUEST_NOT_FOUND');return result.recordset[0];
 }
 export async function currentStep(query,ticket){return (await query('SELECT * FROM dbo.RequestSteps WHERE RequestId=@id AND Position=@position',{id:p.id(ticket.Id),position:p.int(ticket.CurrentPosition)})).recordset[0];}
-export const ticketSummary=row=>({id:row.Id,ticketNumber:row.TicketNumber,typeCode:row.TypeCode,action:row.Action,name:row.RequesterName,requesterId:row.EmployeeId,requesterUserId:row.RequesterId,subjectUserId:row.SubjectUserId,branch:row.Branch,department:row.Department,state:row.Status,assignedRole:row.AssignedRole||null,currentPosition:row.CurrentPosition,justification:row.Justification,createdAt:row.CreatedAt,updatedAt:row.UpdatedAt,version:row.Version.toString('hex')});
+export const ticketSummary=row=>({id:row.Id,ticketNumber:row.TicketNumber,typeCode:row.TypeCode,action:row.Action,name:row.RequesterName,requesterId:row.EmployeeId,requesterUserId:row.RequesterId,subjectUserId:row.SubjectUserId,branch:row.Branch,department:row.Department,state:row.Status,assignedRole:row.AssignedRole||null,currentPosition:row.CurrentPosition,justification:row.Justification,createdAt:row.CreatedAt,updatedAt:row.UpdatedAt,version:row.Version.toString('hex'),...(row.Details?{demoRecord:JSON.parse(row.Details).mockSource}:{} )});
 export async function details(query,ticket,user){
  const parameters={id:p.id(ticket.Id)};
  const result=await query(`SELECT rp.*,u.EmployeeId AS ExistingEmployeeId FROM dbo.RequestPeople rp LEFT JOIN dbo.Users u ON u.Id=rp.UserId WHERE rp.RequestId=@id;
