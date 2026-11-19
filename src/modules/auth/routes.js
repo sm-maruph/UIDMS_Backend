@@ -10,6 +10,13 @@ const challengeSchema=z.object({challenge:z.string().regex(/^[\w-]{43}$/)}).stri
 const validate=schema=>(req,res,next)=>{req.body=parse(schema,req.body);next();};
 export function authRoutes(db,auth){
  const router=Router();
+ if(process.env.UIDMS_DEMO_DIRECTORY==='true'&&process.env.NODE_ENV==='development'&&process.env.HOST==='127.0.0.1'){
+  router.get('/demo-directory',async(req,res)=>{
+   requireCondition(['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress),404,'NOT_FOUND');
+   const {recordset:users}=await db.query('SELECT EmployeeId AS employeeId,Name AS name FROM dbo.Users WHERE Active=1 ORDER BY Name');
+   res.json({users});
+  });
+ }
  router.post('/login',validate(z.object({employeeId:text(40),password:z.string().min(1).max(128)}).strict()),auth.login);
  router.post('/activate',validate(z.object({token:z.string().regex(/^[\w-]{43}$/),password:passwordSchema}).strict()),auth.activate);
  router.post('/mfa/enroll',validate(challengeSchema),auth.enroll);

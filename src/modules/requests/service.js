@@ -42,7 +42,7 @@ export async function validateCreation(query,body,user){
   const key=`${item.employeeId}:${item.systemId}:${item.systemRoleId||''}`;requireCondition(!seen.has(key),400,'DUPLICATE_REQUEST_ITEM');seen.add(key);
   if(['grant','update'].includes(item.operation)&&systems.some(row=>row.Id===item.systemId&&row.RoleId))requireCondition(item.systemRoleId,400,'SYSTEM_ROLE_REQUIRED');
  }
- requireCondition([...people.keys()].every(employeeId=>body.items.some(item=>item.employeeId===employeeId)),400,'EMPLOYEE_ITEMS_REQUIRED');
+ requireCondition(body.typeCode==='movement'&&!body.items.length||[...people.keys()].every(employeeId=>body.items.some(item=>item.employeeId===employeeId)),400,'EMPLOYEE_ITEMS_REQUIRED');
  let subject=null;
  if(body.typeCode==='movement'){
   requireCondition(body.subjectUserId&&body.destinationBranchId&&body.destinationDepartmentId,400,'MOVEMENT_DESTINATION_REQUIRED');
@@ -76,8 +76,13 @@ export async function listTickets(db,user,filter){
  const scope=filter.scope==='mine'?'AND r.RequesterId=@actor':filter.scope==='approvals'?"AND r.Status IN ('Pending','In review') AND r.RequesterId<>@actor AND (r.SubjectUserId IS NULL OR r.SubjectUserId<>@actor) AND cs.Role=@actorRole AND (cs.BranchId IS NULL OR cs.BranchId=@actorBranch) AND (cs.DepartmentId IS NULL OR cs.DepartmentId=@actorDepartment)":'';
  const where=`${visibility} ${scope} AND (@status IS NULL OR r.Status=@status) AND (@search=N'' OR CHARINDEX(@search,r.TicketNumber)>0 OR CHARINDEX(@search,u.Name)>0 OR CHARINDEX(@search,t.Name)>0)`;
  const from='FROM dbo.Requests r JOIN dbo.Users u ON u.Id=r.RequesterId JOIN dbo.RequestTypes t ON t.Code=r.TypeCode JOIN dbo.Lookups b ON b.Id=r.BranchId JOIN dbo.Lookups d ON d.Id=r.DepartmentId LEFT JOIN dbo.RequestSteps cs ON cs.RequestId=r.Id AND cs.Position=r.CurrentPosition';
- const result=await db.query(`SELECT COUNT(*) AS Total ${from} WHERE ${where}; SELECT r.*,u.Name AS RequesterName,u.EmployeeId,t.Name AS Action,b.Name AS Branch,d.Name AS Department,cs.Role AS AssignedRole ${from} WHERE ${where} ORDER BY ${sort} OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY`,{...actorParams(user),status:p.str(filter.status,30),search:p.text(filter.search,100),offset:p.int((filter.page-1)*filter.pageSize),size:p.int(filter.pageSize)});
- return {items:result.recordsets[1].map(ticketSummary),total:result.recordsets[0][0].Total,page:filter.page,pageSize:filter.pageSize};
+ const result=await db.query(`SELECT COUNT(*) AS Total ${from} WHERE ${where}; SELECT r.*,u.Name AS RequesterName,u.EmployeeId,t.Name AS Action,b.Name AS Branch,d.Name AS Department,cs.Role AS AssignedRole, (SELECT STRING_AGG(s.Name, N', ') FROM dbo.Systems s WHERE EXISTS(SELECT 1 FROM dbo.RequestItems i WHERE i.RequestId=r.Id AND i.SystemId=s.Id)) AS SystemNames ${from} WHERE ${where} ORDER BY ${sort} OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY`,{...actorParams(user),status:p.str(filter.status,30),search:p.text(filter.search,100),offset:p.int((filter.page-1)*filter.pageSize),size:p.int(filter.pageSize)});
+ const items=result.recordsets[1].map(row=>{
+  const saved=JSON.parse(row.Details||'{}');
+  const imported=row.SubmittedIp==='demo-import'&&saved.source==='demo-import';
+  return {...ticketSummary(row),...(imported?{demoRecord:saved.demoRecord}:{}),...(row.TypeCode==='movement'?{transferChange:saved.transferChange}:{}),system:row.SystemNames||saved.demoRecord?.system||''};
+ });
+ return {items,total:result.recordsets[0][0].Total,page:filter.page,pageSize:filter.pageSize};
 }
 export async function replaceTicket(db,req,id,body){return db.transaction(async query=>{
  const ticket=await loadTicket(query,id,req.user,{lock:true});assertVersion(ticket,body.version);

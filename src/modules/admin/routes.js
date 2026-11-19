@@ -25,6 +25,11 @@ export function adminRoutes(db,config){
   requireCondition(config.MAIL_ALLOWED_DOMAINS.split(',').includes(body.email.split('@')[1].toLowerCase()),400,'EMAIL_DOMAIN_NOT_ALLOWED');
   const result=await db.transaction(async query=>{const row=(await query('INSERT dbo.MailingGroups(Name,Email) OUTPUT inserted.Id VALUES(@name,@email)',{name:p.text(body.name,160),email:p.text(body.email,254)})).recordset[0];await audit(query,req,'mailing_group.created',row.Id);return row;});res.status(201).json({id:result.Id});
  });
+ router.get('/mailing-groups/:id/members',async(req,res)=>{
+  const group=uuidParam(req);
+  const {recordset}=await db.query('SELECT UserId FROM dbo.MailingGroupMembers WHERE GroupId=@group',{group:p.id(group)});
+  res.json({userIds:recordset.map(row=>row.UserId)});
+ });
  router.put('/mailing-groups/:id/members',async(req,res)=>{
   const group=uuidParam(req),body=parse(z.object({userIds:z.array(id).max(500)}).strict(),req.body);
   await db.transaction(async query=>{
