@@ -186,6 +186,31 @@ backend/
   docs/                 API, data model, deployment and testing guidance
 ```
 
+## PM2 on Windows behind IIS
+
+Use [ecosystem.config.cjs](ecosystem.config.cjs) in the deployed backend directory, for example `C:\UIDMS\backend`. It starts only `uidms-api`, uses the correct `src/server.js` entry point and loads the private `.env` file. It does not set `NODE_ENV` or override database/AD settings; the deployment mode remains the one configured in `.env`.
+
+Stop any UIDMS `npm run dev` process first to release port 4000. In Command Prompt, under the Windows account that manages the existing PM2 applications:
+
+```bat
+cd /d C:\UIDMS\backend
+pm2 start ecosystem.config.cjs --only uidms-api
+pm2 logs uidms-api --lines 30 --nostream
+curl.exe --noproxy 127.0.0.1 http://127.0.0.1:4000/health/db
+pm2 save
+pm2 status
+```
+
+PMS can retain its existing `cbc-backend` process. After changing UIDMS code or `.env`, restart this app with `pm2 restart uidms-api --update-env`. Watching source/environment files is disabled under PM2.
+
+For same-machine IIS/ARR, use `HOST=127.0.0.1`, `PORT=4000`, `TRUST_PROXY=127.0.0.1,::1`, and include the actual HTTPS site origin(s) in `ALLOWED_ORIGINS`. Serve the frontend build through IIS with its `web.config`, which forwards `/api` to `http://127.0.0.1:4000/api`. If port 4000 is changed, update both the backend `.env` and the proxy target in `frontend/public/web.config`, then rebuild and deploy the frontend. Each application must have an available local listening address/port.
+
+Other PCs use the IIS URL, for example `https://192.168.23.17/api/auth/options` for an IP binding or `https://uidms.combankbd.com/api/auth/options` after hostname resolution is configured. They do not connect to their own `localhost:4000`. IIS HTTPS access, certificate trust, DNS/proxy routing and firewall access must be configured for those clients. PM2 manages the Node process; IIS provides its network entry point.
+
+`pm2 save` saves the process list, including other apps managed by that same PM2 account. It does not itself create a Windows boot service. Use the server's approved PM2 Windows service/startup task under the same account and PM2 home; `pm2 resurrect` restores that account's saved list. See [PM2 startup documentation](https://pm2.keymetrics.io/docs/usage/startup/).
+
+The PM2 configuration does not replace the production TLS, secure-cookie, AD transport and reverse-proxy requirements below.
+
 ## Production and VAPT
 
 The implementation includes controls intended to support an OWASP ASVS review. It is **not a VAPT certificate or a guarantee of passing**. Review [SECURITY.md](docs/SECURITY.md) before deployment. Run the SQL lifecycle test against a separate test database and perform independent testing of the deployed frontend, API, SQL permissions, network and reverse proxy before putting real employee data into it.
