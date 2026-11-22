@@ -17,6 +17,7 @@ import {adminRoutes} from './modules/admin/routes.js';
 import {attachmentRoutes} from './modules/attachments/routes.js';
 import {SqlRateLimitStore} from './core/rate-limit-store.js';
 import {authRateLimitOptions,rateLimitResponse} from './core/auth-rate-limit.js';
+import {clientAddress} from './core/client-address.js';
 
 export function createApp({db,config,directory}){
  const app=express();app.disable('x-powered-by');app.set('query parser','simple');
@@ -31,6 +32,7 @@ export function createApp({db,config,directory}){
   next();
  });
  app.use(cors({origin:config.origins,credentials:true,methods:['GET','POST','PUT','PATCH','DELETE','OPTIONS'],allowedHeaders:['Content-Type','X-CSRF-Token'],exposedHeaders:['X-Request-ID','Retry-After','RateLimit','RateLimit-Policy'],maxAge:600}));
+ app.use(clientAddress);
  app.use('/api',rateLimit({windowMs:60000,limit:180,store:config.NODE_ENV==='test'?undefined:new SqlRateLimitStore(db,'api'),standardHeaders:'draft-8',legacyHeaders:false,handler:rateLimitResponse('RATE_LIMITED','Too many requests.')}));
  app.use('/api/auth',rateLimit(authRateLimitOptions(db,config)));
  app.use(cookieParser());
