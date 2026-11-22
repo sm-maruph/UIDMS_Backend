@@ -15,6 +15,25 @@ test('health response uses security headers and exposes no implementation signat
  const {app}=setup();const response=await request(app).get('/health/live');assert.equal(response.status,200);assert.equal(response.headers['x-content-type-options'],'nosniff');assert.equal(response.headers['x-frame-options'],'SAMEORIGIN');assert.equal(response.headers['x-powered-by'],undefined);assert.equal(response.headers['cache-control'],'no-store');assert.match(response.headers['content-security-policy'],/default-src 'none'/);
 });
 test('API requires authentication before reading data',async()=>{const {app}=setup();const result=await request(app).get('/api/requests');assert.equal(result.status,401);assert.equal(result.body.error.code,'UNAUTHENTICATED');});
+
+test('an optional signature returns no content when absent and only reads the authenticated profile',async()=>{
+ const {app,calls}=setup(()=>({recordset:[{Signature:null}]}));
+ const anonymous=await request(app).get('/api/profile/signature');assert.equal(anonymous.status,401);
+ assert.equal(calls.some(call=>call.text.startsWith('SELECT Signature')),false);
+ const response=await request(app).get('/api/profile/signature').query({id:otherId}).set('Cookie',`uidms_dev=${session}`);
+ assert.equal(response.status,204);assert.equal(response.text,'');assert.equal(response.headers['cache-control'],'no-store');
+ const query=calls.find(call=>call.text.startsWith('SELECT Signature'));assert.equal(query.params.id.value,actorId);
+});
+
+test('a saved signature is returned as PNG while a missing profile remains an error',async()=>{
+ const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=','base64');
+ const saved=setup(()=>({recordset:[{Signature:png}]}));
+ const response=await request(saved.app).get('/api/profile/signature').set('Cookie',`uidms_dev=${session}`);
+ assert.equal(response.status,200);assert.match(response.headers['content-type'],/^image\/png/);assert.deepEqual(response.body,png);
+ const missing=setup(()=>({recordset:[]}));
+ const rejected=await request(missing.app).get('/api/profile/signature').set('Cookie',`uidms_dev=${session}`);
+ assert.equal(rejected.status,404);assert.equal(rejected.body.error.code,'USER_NOT_FOUND');
+});
 test('cross-origin writes and writes without Origin are rejected',async()=>{
  const {app}=setup();for(const origin of ['https://attacker.example',null]){let call=request(app).post('/api/auth/login');if(origin)call=call.set('Origin',origin);const result=await call.send({employeeId:'TEST',password:'something'});assert.equal(result.status,403);}
 });

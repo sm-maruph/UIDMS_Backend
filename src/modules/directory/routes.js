@@ -25,7 +25,10 @@ export function directoryRoutes(db,config){
   await db.transaction(async query=>{await query("UPDATE dbo.Users SET Signature=@signature,SignatureContentType='image/png',UpdatedAt=SYSUTCDATETIME() WHERE Id=@id",{signature:p.bytes(bytes),id:p.id(req.user.Id)});await audit(query,req,'profile.signature_updated',req.user.Id);});res.status(204).end();
  });
  router.get('/profile/signature',async(req,res)=>{
-  const row=(await db.query('SELECT Signature FROM dbo.Users WHERE Id=@id',{id:p.id(req.user.Id)})).recordset[0];requireCondition(row?.Signature,404,'SIGNATURE_NOT_FOUND');res.type('image/png').send(row.Signature);
+  const row=(await db.query('SELECT Signature FROM dbo.Users WHERE Id=@id',{id:p.id(req.user.Id)})).recordset[0];
+  requireCondition(row,404,'USER_NOT_FOUND');
+  if(!row.Signature)return res.status(204).end();
+  res.type('image/png').send(row.Signature);
  });
  router.get('/lookups',async(req,res)=>{
   const result=await db.query(`SELECT Id,Kind,Name FROM dbo.Lookups WHERE Active=1 ORDER BY Kind,Name; SELECT Id,Name,TransferManaged FROM dbo.Systems WHERE Active=1 ORDER BY Name; SELECT sr.Id,sr.SystemId,sr.Name FROM dbo.SystemRoles sr JOIN dbo.Systems s ON s.Id=sr.SystemId WHERE sr.Active=1 AND s.Active=1 ORDER BY sr.Name; SELECT Code,Name,IncludesHr,InitiatorRoles FROM dbo.RequestTypes WHERE Active=1; SELECT TypeCode,Position,Role FROM dbo.WorkflowSteps ORDER BY TypeCode,Position; SELECT g.Id,g.Name,g.Email,CAST(CASE WHEN EXISTS(SELECT 1 FROM dbo.MailingGroupMembers m WHERE m.GroupId=g.Id AND m.UserId=@actor) THEN 1 ELSE 0 END AS bit) AS IsMember FROM dbo.MailingGroups g WHERE g.Active=1`,{actor:p.id(req.user.Id)});

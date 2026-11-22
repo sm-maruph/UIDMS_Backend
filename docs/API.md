@@ -97,7 +97,7 @@ Authenticated POST/PUT/PATCH/DELETE calls with no domain payload should still se
 | --- | --- | --- | --- |
 | GET | `/profile` | Current safe profile, current `access` grants, and `canEditAccess` capability | Signed in |
 | PATCH | `/profile` | `{version,designationId,access?,signatureBase64?}`; atomic self-profile update | Self; access editing only for marked local mock accounts; audited |
-| GET | `/profile/signature` | Current user's PNG signature | Self |
+| GET | `/profile/signature` | Current user's PNG signature (200); no saved signature returns 204 with no body | Self |
 | PUT | `/profile/signature` | `{base64}` PNG, max 256 KiB | Self; audited |
 | GET | `/lookups` | Organization IDs, systems/roles, request types/workflows, mailing groups | Signed in |
 | GET | `/users?page=1&pageSize=20&search=...` | Paginated directory | Self, own managerial scope, operations, or admin scope |
