@@ -29,6 +29,8 @@ This project implements security controls; it does not certify a VAPT pass. The 
 
 The scrypt settings are N=131072, r=8, p=1, per-user random salt and 64-byte output. These match the scrypt alternative described in the [OWASP Password Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html). Account password and MFA failures have separate counters. MFA challenge attempts are also limited. Benchmark memory/CPU under realistic login concurrency: each hash requires roughly 128 MiB, and parallel hashing needs corresponding capacity.
 
+An explicit development testing pause (`NODE_ENV=development`, `MFA_REQUIRED=false`) skips authenticator verification for existing and newly enrolled AD profiles. It preserves encrypted MFA secrets, requires successful AD verification, retains account lockouts and roles, and records the pause in startup/login audit metadata. Re-enable `MFA_REQUIRED=true` and restart to require MFA on subsequent logins. Existing sessions are not retroactively revoked. Production refuses `MFA_REQUIRED=false`.
+
 ## Production deployment
 
 1. Put the API behind a managed HTTPS reverse proxy, bound to loopback or a private interface. Terminate TLS securely and redirect HTTP at the proxy. The API rejects non-HTTPS requests in production.

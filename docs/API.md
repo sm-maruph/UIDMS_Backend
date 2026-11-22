@@ -21,6 +21,8 @@ First-time AD profile setup (after `POST /auth/login`):
 
 The token is hashed in SQL, expires in ten minutes, and is single-use on completion. Keep it in memory only. New profiles have no local password or access grants. Existing profiles are not overwritten. Invalid/expired/consumed proofs return `401 ENROLLMENT_EXPIRED`; conflicting profiles/email return `409 PROFILE_ALREADY_EXISTS`. No session cookie is issued until successful MFA verification.
 
+Development testing exception: with `NODE_ENV=development` and `MFA_REQUIRED=false`, login for existing users and HTTP 201 profile completion return `{user,csrfToken,provider}` with the HttpOnly session cookie directly, without an MFA challenge. Clients must handle both session and challenge results. Stored MFA secrets are preserved; restoring `MFA_REQUIRED=true` resumes prompts on the next login. Production rejects this configuration.
+
 `GET /auth/mock-directory` lists active marked test accounts only for an allowed local mock client; otherwise it returns 404. `POST /users` accepts optional `mock: true` for a recently authenticated administrator in local mock mode. It returns `{id, mock: true}` and sets a separately salted `1234` password hash. Ordinary user creation returns an activation token instead.
 
 1. `POST /auth/login`:

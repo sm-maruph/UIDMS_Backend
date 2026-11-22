@@ -8,6 +8,7 @@ import {createLdapDirectory} from './ldap-directory.js';
 import {providerEnabled} from './providers.js';
 import {resolveAdProfile} from './ad-profile.js';
 import {beginDirectoryEnrollment,createDirectoryOnboarding} from './directory-onboarding.js';
+import {mfaPausedForTesting,mfaRequiredForUser} from './mfa-policy.js';
 
 export const publicUser=user=>({id:user.Id,employeeId:user.EmployeeId,name:user.Name,email:user.Email,role:user.Role,branchId:user.BranchId,departmentId:user.DepartmentId,designationId:user.DesignationId,active:user.Active,isDemo:Boolean(user.IsDemo),version:user.Version?.toString('hex')});
 export const userColumns='u.Id,u.EmployeeId,u.Name,u.Email,u.Role,u.BranchId,u.DepartmentId,u.DesignationId,u.Active,u.IsDemo,u.Version';
@@ -18,7 +19,7 @@ export function createAuth(db,config,{directory=createLdapDirectory(config)}={})
   const raw=token(),csrf=token();
   await query('UPDATE dbo.Sessions SET RevokedAt=SYSUTCDATETIME() WHERE UserId=@user AND RevokedAt IS NULL',{user:p.id(user.Id)});
   await query('INSERT dbo.Sessions(TokenHash,UserId,CsrfHash,ExpiresAt,Ip,UserAgent,AuthProvider) VALUES(@token,@user,@csrf,DATEADD(hour,@hours,SYSUTCDATETIME()),@ip,@agent,@provider)',{token:p.str(digest(raw),64),user:p.id(user.Id),csrf:p.str(digest(csrf),64),hours:p.int(config.SESSION_MAX_HOURS),ip:p.str(req.ip,64),agent:p.text(String(req.get('user-agent')||'').slice(0,300),300),provider:p.str(provider,10)});
-  await audit(query,{...req,user},'auth.login',user.Id,{provider});
+  await audit(query,{...req,user},'auth.login',user.Id,{provider,mfaPausedForTesting:mfaPausedForTesting(config)});
   return {raw,csrf,user:publicUser(user),provider};
  }
  function sendSession(res,result){res.cookie(cookieName,result.raw,cookieOptions);res.json({user:result.user,csrfToken:result.csrf,provider:result.provider});}
@@ -54,7 +55,7 @@ export function createAuth(db,config,{directory=createLdapDirectory(config)}={})
     return null;
    }
    await query('UPDATE dbo.Users SET FailedAttempts=0,LockedUntil=NULL WHERE Id=@id',{id:p.id(user.Id)});
-   if(!mockLoginAllowed(config,req,user)&&(config.MFA_REQUIRED||user.MfaSecret))return challenge(query,user);
+   if(!mockLoginAllowed(config,req,user)&&mfaRequiredForUser(config,user))return challenge(query,user);
    return createSession(query,req,user);
   });
   requireCondition(result,401,'INVALID_CREDENTIALS','Invalid credentials or account temporarily unavailable.');
@@ -77,7 +78,7 @@ export function createAuth(db,config,{directory=createLdapDirectory(config)}={})
    if(!available){await audit(query,req,'auth.ad_login_failed',user.Id,{provider:'ad'});return null;}
    await query('UPDATE dbo.Users SET FailedAttempts=0,LockedUntil=NULL WHERE Id=@id',{id:p.id(user.Id)});
    await audit(query,{...req,user},'auth.ad_verified',user.Id,{provider:'ad',systemId:identity.systemId});
-   if(config.MFA_REQUIRED||user.MfaSecret)return challenge(query,user,'ad');
+   if(mfaRequiredForUser(config,user))return challenge(query,user,'ad');
    return createSession(query,req,user,'ad');
   });
   requireCondition(result,401,'INVALID_CREDENTIALS','Invalid credentials or account temporarily unavailable.');
@@ -144,7 +145,8 @@ export function createAuth(db,config,{directory=createLdapDirectory(config)}={})
    return challenge(query,{Id:row.UserId});
   });res.json(result);
  }
- return {authenticate,login,enroll,verifyMfa,activate,cookieName,cookieOptions,sendSession,...createDirectoryOnboarding(db,config,challenge)};
+ const finishOnboarding=(query,req,user)=>mfaPausedForTesting(config)?createSession(query,req,user,'ad'):challenge(query,user,'ad');
+ return {authenticate,login,enroll,verifyMfa,activate,cookieName,cookieOptions,sendSession,...createDirectoryOnboarding(db,config,finishOnboarding,sendSession)};
 }
 export const roles=(...allowed)=>(req,res,next)=>{requireCondition(allowed.includes(req.user.Role),403,'FORBIDDEN');next();};
 export function recentAuth(req,res,next){requireCondition(Date.now()-new Date(req.user.AuthenticatedAt).getTime()<10*60*1000,403,'REAUTHENTICATION_REQUIRED','Sign in again before this sensitive action.');next();}

@@ -80,6 +80,8 @@ Use your server hostname and actual TCP port. For a named instance, use its host
 
 For local development with SQL Server's self-signed certificate, `.env.example` sets `DB_TRUST_CERTIFICATE=true` and `COOKIE_SECURE=false`. Production refuses those settings: it requires validated SQL TLS, HTTPS origins, secure cookies and MFA.
 
+To temporarily pause authenticator prompts during development testing, set `NODE_ENV=development` and `MFA_REQUIRED=false` in the hosting PC's `backend/.env`, then restart UIDMS (`pm2 restart uidms-api --update-env` under PM2). This also skips prompts for already enrolled users; their encrypted authenticator secrets remain saved. AD credentials, roles, lockouts and session protections still apply. New AD employees complete the profile wizard and sign in directly as User. Set `MFA_REQUIRED=true` and restart to resume MFA: enrolled users use their existing authenticator, and users without one enroll on their next login. Production refuses this pause. Startup logs report `mfaPausedForTesting`, and login audit records include the flag. A restart does not revoke existing sessions; sign out and back in to verify resumed prompts.
+
 The encryption key encrypts MFA secrets and short-lived credential deliveries with AES-256-GCM. Back it up separately from the database and restrict it to the service account. A lost key makes those encrypted values unreadable. Do not generate a new key each time the service restarts.
 
 Check the connection and privilege boundary:

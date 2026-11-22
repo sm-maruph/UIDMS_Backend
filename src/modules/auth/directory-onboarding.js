@@ -20,7 +20,7 @@ export async function beginDirectoryEnrollment(query,identity,req){
  return {onboardingRequired:true,onboardingToken:raw,profile,expiresInSeconds:600};
 }
 
-export function createDirectoryOnboarding(db,config,mfaChallenge){
+export function createDirectoryOnboarding(db,config,finishAuthentication,sendSession){
  function enabled(){requireCondition(config.AUTH_MODE==='ad'&&adLoginEnabled(config),503,'AUTH_PROVIDER_DISABLED');}
  async function pending(query,raw){
   const row=(await query('SELECT * FROM dbo.AdEnrollmentChallenges WITH(UPDLOCK,HOLDLOCK) WHERE TokenHash=@hash AND ExpiresAt>SYSUTCDATETIME()',{hash:p.str(digest(raw),64)})).recordset[0];
@@ -51,9 +51,12 @@ export function createDirectoryOnboarding(db,config,mfaChallenge){
    await query('INSERT dbo.DirectoryIdentities(SystemId,UserId) VALUES(@system,@user); DELETE dbo.AdEnrollmentChallenges WHERE TokenHash=@hash',{
     system:params.system,user:p.id(user.Id),hash:p.str(verified.TokenHash,64)});
    await audit(query,{...req,user},'auth.directory_profile_created',user.Id,{provider:'ad',role:'User'});
-   // No session or access grants are issued until the new employee completes MFA.
-   return mfaChallenge(query,user,'ad');
-  });res.status(201).json(result);
+   // Normal enrollment requires MFA; the explicit development pause may issue a session.
+   return finishAuthentication(query,req,user);
+  });
+  res.status(201);
+  if(result.raw)return sendSession(res,result);
+  res.json(result);
  }
  return {onboardingOptions,completeOnboarding};
 }

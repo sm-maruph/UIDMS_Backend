@@ -20,6 +20,8 @@ After AD verifies an existing user's credentials, the first MFA setup shows **Sh
 
 The frontend generates the QR locally from the backend's `otpauthUrl`; no external QR service receives the secret. UIDMS stores the MFA secret encrypted and activates enrollment only after a valid code. Later sign-ins request the current authenticator code without repeating setup. No database migration or additional environment setting is needed for QR enrollment.
 
+For temporary testing only, `NODE_ENV=development` with `MFA_REQUIRED=false` pauses all MFA prompts, including for enrolled accounts, without deleting their saved secrets. New employees still verify AD credentials and complete the profile wizard, then receive a User session directly. Restart the backend after changing `.env`; with PM2 use `pm2 restart uidms-api --update-env`. Restore `MFA_REQUIRED=true` and restart to require the existing authenticator or first-time enrollment on the next login. Production requires MFA and refuses the pause. Existing sessions remain valid until logout, expiry or revocation.
+
 ## Minimal environment
 
 Keep this project's SQL, session and origin settings. The AD section needs only:
