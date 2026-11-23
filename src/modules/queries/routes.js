@@ -6,6 +6,8 @@ import {loadTicket,currentStep} from '../requests/repository.js';
 import {assertReview,assertVersion} from '../requests/policy.js';
 import {version} from '../requests/schemas.js';
 import {audit,notify} from '../audit/service.js';
+import {queryParticipants} from './participants.js';
+import {createEmailDrafts} from '../fulfilment/system-email.js';
 
 export function queryRoutes(db){
  const router=Router();
@@ -23,6 +25,7 @@ export function queryRoutes(db){
    requireCondition(row,404,'QUERY_NOT_FOUND');
    const ticket=await loadTicket(query,row.RequestId,req.user,{lock:true});assertVersion(ticket,body.version);requireCondition(ticket.Status==='Query',409,'QUERY_CLOSED');
    await query('INSERT dbo.QueryResponses(QueryId,AuthorId,Message) VALUES(@id,@user,@message); UPDATE dbo.Queries SET ResolvedAt=SYSUTCDATETIME() WHERE Id=@id; UPDATE dbo.Requests SET Status=@status,UpdatedAt=SYSUTCDATETIME() WHERE Id=@request',{id:p.id(queryId),user:p.id(req.user.Id),message:p.text(body.message),status:p.str(row.ReturnStatus,30),request:p.id(ticket.Id)});
+   if(row.ReturnStatus==='Approved')await createEmailDrafts(query,ticket);
    await audit(query,req,'query.replied',queryId,{requestId:ticket.Id});await notify(query,row.AuthorId,ticket.Id,`${ticket.TicketNumber}: query response received.`);
   });res.status(204).end();
  });
@@ -33,7 +36,7 @@ export async function raiseQuery(db,req,requestId){
  return db.transaction(async query=>{
   const ticket=await loadTicket(query,requestId,req.user,{lock:true});assertVersion(ticket,body.version);
   const step=await currentStep(query,ticket);assertReview(ticket,step,req.user);
-  const recipient=(await query(`SELECT u.Id FROM dbo.Users u WHERE u.Id=@recipient AND u.Active=1 AND u.Id<>@actor AND (u.Id=@requester OR u.Id=@subject OR EXISTS(SELECT 1 FROM dbo.RequestSteps s WHERE s.RequestId=@request AND s.Position<@position AND (s.ActorId=u.Id OR (s.Role=u.Role AND (s.BranchId IS NULL OR s.BranchId=u.BranchId) AND (s.DepartmentId IS NULL OR s.DepartmentId=u.DepartmentId)))) OR (u.Role='HR' AND EXISTS(SELECT 1 FROM dbo.RequestSteps s WHERE s.RequestId=@request AND s.Role='HR')))`,{recipient:p.id(body.recipientId),actor:p.id(req.user.Id),requester:p.id(ticket.RequesterId),subject:p.id(ticket.SubjectUserId),request:p.id(ticket.Id),position:p.int(ticket.CurrentPosition)})).recordset[0];
+  const recipient=(await queryParticipants(query,ticket,req.user.Id)).find(user=>user.Id===body.recipientId);
   requireCondition(recipient,400,'INVALID_QUERY_RECIPIENT','Choose the requester or an eligible participant in this workflow.');
   const row=(await query('INSERT dbo.Queries(RequestId,AuthorId,RecipientId,Message,ReturnStatus) OUTPUT inserted.Id VALUES(@request,@actor,@recipient,@message,@status)',{request:p.id(ticket.Id),actor:p.id(req.user.Id),recipient:p.id(body.recipientId),message:p.text(body.message,350),status:p.str(ticket.Status,30)})).recordset[0];
   await query("UPDATE dbo.Requests SET Status='Query',UpdatedAt=SYSUTCDATETIME() WHERE Id=@id",{id:p.id(ticket.Id)});

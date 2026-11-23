@@ -23,6 +23,8 @@ The schema normalizes identities, requested access, routing and history. Form-sp
 | Mailing-group directory/member lists | MailingGroups, MailingGroupMembers |
 | Consent, drawing/signature and submitted-form preview | Users.Signature, Requests.SignatureSnapshot, ConsentAt, RequesterSnapshot and Details.submittedForm |
 | Approval workflow and recommendation remarks | WorkflowSteps templates; RequestSteps per-ticket snapshots |
+| Timed acting authority and effective roles | RoleDelegations; uidms_EffectiveRoles, uidms_ManagedScopes and uidms_StepReviewers |
+| Department heads and branch managers by system ID | OrganizationApprovers.ScopeId references Lookups; UserId references Users; RequestSteps.AssignedUserId pins the exact approver |
 | HR police/reference clearance and previous changes | HrClearances plus transactional AuditEvents |
 | Query inbox, response threads, floating bubble | Queries and QueryResponses |
 | IT/HO processing and closure | Requests.Status and Fulfilments |
@@ -62,15 +64,16 @@ erDiagram
 
 - `requesterId`, roles, source IP, timestamps, ticket number, status, routing and steps come from the backend. They cannot be assigned in a create body.
 - `My requests` means submissions by the authenticated actor. Being a beneficiary, reviewer or query recipient does not put another user's ticket there.
-- Branch managers and department heads operate within the ticket's snapshotted scope. IT, HR, CITO and COO have operational visibility. Portal administrators do not gain an implicit business-approval override; configuration authority and approval authority are separated.
+- Manager steps resolve to OrganizationApprovers for the ticket's target branch or department, following existing head-office/Gulshan routing. AssignedUserId identifies the permanent account, with no change to its base portal role or profile location. Timed RoleDelegations replace recommendation authority during leave; scoped visibility and exact eligible reviewers are computed in SQL. Each branch has one manager and each department one head; an employee may head multiple departments. Legacy unassigned steps retain role/scope authorization; a unique active legacy manager is used only when no explicit mapping exists. Inactive, missing or ambiguous resolution blocks submission. IT, HR, CITO, COO and administrators have operational visibility according to their current effective roles. Portal administrators do not gain an implicit business-approval override; configuration authority and approval authority are separated.
 - A requester or movement subject cannot approve their own request. Provide alternate authorized reviewers when the usual manager is also the requester.
-- A normal route resolves Manager → optional HR → IT → CITO → COO. Individual approvals do not mark the whole ticket approved.
-- Self-service reset/unlock is the exception: User → CITO → IT processing → Completed, with no required justification. CITO is its only approval step.
+- Initial service defaults use Manager → optional HR → IT → CITO → COO. A recently authenticated Super Admin can configure any unique subset/order of these roles, with organization routing retained for Manager. Individual approvals do not mark the whole ticket approved until the saved remaining chain is complete.
+- Self-service reset/unlock initially uses User → CITO → Processing → Completed, with no required justification. Its saved workflow is configurable like other services. The frontend renders actual RequestSteps, including pending rows, rather than a fixed frontend chain.
 - A movement starts with employee access review, then the normal destination approval route. Only systems marked TransferManaged may be selected in the employee review.
+- Workflow studio can apply edits to pending steps of ongoing requests. Completed decisions retain their original role, scope, actor, timestamp, remark and position; processing/completed tickets are not reopened. All affected requests receive a new rowversion and an audit event.
 - Query routing is validated by the server; a single open query pauses a ticket. Only its intended recipient may respond, once. The prior review status is restored.
 - HR completion rules are enforced before HR approves new-user requests.
 - IT processing/fulfilment requires completed approvals. Manual external provisioning is not replaced by an API status change.
-- New-user credential custody uses the recorded approving manager/head; other requests use the movement subject or submitter. Credentials are not sent in notification emails or general ticket JSON.
+- New-user credential custody uses the recorded approving manager/head, or the explicit scope assignment (then a unique active legacy scoped manager/head) when manager approval is omitted. The custodian can view their delivery and its request. Other requests use the movement subject or submitter. Credentials are not sent in notification emails or general ticket JSON.
 - All state-changing business operations write an audit record in the same transaction. Failed writes roll back the business change.
 - SQL rowversion protects stale concurrent actions. The API returns 409 instead of silently overwriting a newer record. Deadlock victims fail safely; clients should reload and retry deliberately.
 - Removal preserves history through cancellation and DeletedAt. There is no HTTP hard-delete endpoint for audit records or submitted requests.

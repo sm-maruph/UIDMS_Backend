@@ -17,6 +17,7 @@ test('local SQL profile editing saves designation, signature and access without 
   await db.connect();
   original=(await db.query("SELECT Id,Version,DesignationId FROM dbo.Users WHERE EmployeeId=N'BNGL6191' AND IsDemo=1 AND Active=1")).recordset[0];assert.ok(original);
   await assert.rejects(db.transaction(async query=>{
+   await query("UPDATE dbo.Users SET Role=N'IT' WHERE Id=@id",{id:p.id(original.Id)});
    server=createApp({db:{query,transaction:work=>work(query)},config}).listen(0,'127.0.0.1');await once(server,'listening');
    const base=`http://127.0.0.1:${server.address().port}`;
    const login=await fetch(base+'/api/auth/login',{method:'POST',headers:{Origin:config.origins[0],'Content-Type':'application/json'},body:JSON.stringify({employeeId:'BNGL6191',password:'1234'})});

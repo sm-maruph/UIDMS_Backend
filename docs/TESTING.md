@@ -128,3 +128,30 @@ The browser flow was checked with isolated API fixtures: AD login to the existin
 `test/mfa-pause.test.js` verifies the explicit development pause for an already enrolled AD profile, preserved role and encrypted secret, safe cookie/session output, rejection of invalid AD credentials and locked/disabled profiles, and direct User session after new-employee profile completion. Re-enabling MFA restores the existing authenticator or first-time setup. The ordinary production configuration test also verifies that production refuses `MFA_REQUIRED=false`.
 
 `test/client-address.test.js` verifies IIS IP:port normalization, preservation of bare IPv6 addresses and IPv6 subnet quotas, rejection of malformed addresses from a trusted proxy, and rejection of forwarded-IP spoofing from untrusted clients. Actual API and authentication middleware tests rotate source ports and confirm the same client still reaches its original rate limit while a different IP retains an independent quota.
+
+`test/email-recipients.test.js` checks required processing CCs for new-user, template and general drafts, directory/snapshot requester email resolution, missing-email handling, deduplication, the 23-recipient bound, existing unsent drafts, preserved sent history, HTTP send-confirmation enforcement, role restrictions and header-injection rejection. Frontend recipient tests cover template/fallback drafts and saved new-user email drafts. A component interaction check also verified that editing CC cannot remove required recipients from copied text, the Gmail compose URL or the sent-confirmation payload, using stubs without opening or sending external email.
+
+## Configurable and ongoing workflows
+
+`test/workflows.test.js` checks flexible role order, strict role validation, preserved approval records, pending-step replacement, query return status, stale/concurrent saves, conflicting template overrides, fresh administrator authorization and manager-only new-user credential custody. Frontend workflow tests cover actual SQL step rendering/mapping, current waiting assignments, organization scope and separation of duties. Component checks exercised the real editor's role selection/save payload and the actual approval journey during CITO-only approval, HO processing and completion.
+
+Run the rollback-only SQL test on the local development database:
+
+```powershell
+$env:UIDMS_SQL_WORKFLOW_SMOKE='true'
+node --env-file=.env --test test/workflows.sql.test.js
+Remove-Item Env:UIDMS_SQL_WORKFLOW_SMOKE
+```
+
+It creates isolated fixture organizations, users and a request type. It verifies configured request steps, final approval, processing emails, credential delivery and completion; applies edits to pending steps without changing an approved row; rejects stale versions and the wrong reviewer; resumes an open query into the updated chain; preserves completed tickets; supports new-requests-only edits; honors a customized reset chain; and delivers new-user credentials to the scoped manager when manager approval is omitted. All fixtures and temporary default changes roll back, and original reset/new-user workflows are verified afterward. No real AD authentication or external email send occurs.
+
+## Organization approver assignments
+
+`test/approver-assignments.test.js` checks IT/Super Admin restrictions, fresh sessions, strict payloads, stale mapping versions, missing/inactive accounts, exact-ID review authorization, self-approval prevention, role preservation and waiting-only reconciliation. Frontend assignment tests cover menu permission, a scoped ordinary User's approval badge/list, actual step precedence and server-authorized query recipients. Browser checks exercise finding an unknown/valid system ID, confirming and saving both scope types, refreshed assignee display, and light/dark layouts at desktop, tablet and mobile sizes.
+
+After applying migration 014, run `test/approver-assignments.sql.test.js` with `UIDMS_SQL_APPROVER_SMOKE=true` and the local development `.env`. It verifies branch and department routing to exact IDs, multiple scopes per employee, unchanged account roles, visibility, pending-step reassignment, preserved decisions, stale version rejection and credential-safe query participant data. All fixtures roll back. See [setup and test command](APPROVER-ASSIGNMENTS.md).
+
+
+## Timed acting authority and administrator boundaries
+
+See [roles and acting appointments](ROLES-AND-ACTING.md) for the current verified role matrix, deployment migration 015, API and rollback-only SQL test. Acting authority is time-bound, evaluated on each API request, restricted to the responsible principal/scope and cannot be delegated again. Admin manages ordinary roles including IT/CITO, but only Super Admin grants new administrator authority; Admin may maintain existing administrator accounts. Direct self-access editing is restricted to IT/Admin/Super Admin, including effective acting IT; mock accounts have no exception. The SQL test verifies authority expiring inside an existing AD-backed session, scope/role replacement, actual acting approver attribution and preserved decisions.

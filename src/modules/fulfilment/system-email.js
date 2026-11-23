@@ -1,6 +1,7 @@
 import {p} from '../../core/db.js';
 import {text,z} from '../../core/validation.js';
 import {categoryForType,emailServices} from './email-services.js';
+import {applyProcessingCc} from './email-recipients.js';
 
 export const itemVariables=['name','employeeId','system','systemId','role','operation','department','branch','reason'];
 export const templateVariables=['ticketNumber','requestType','justification','items',...itemVariables];
@@ -12,6 +13,8 @@ export const emailFields=z.object({
  subject:text(300).refine(value=>!/[\r\n\t]/.test(value),'Use a single line for the subject'),
  body:text(4000),
 });
+// A template allows 20 optional CCs, plus the two fixed mailboxes and requester.
+export const processingEmailFields=emailFields.extend({cc:z.array(z.email().max(254)).max(23).default([]),body:text(200000)});
 
 export function variablesForService(category){
  const service=emailServices[category];
@@ -63,14 +66,17 @@ export function groupEmailDrafts(ticket,items){
   const recipients=template.TemplateId?JSON.parse(template.Recipients):{to:[],cc:[]};
   const subject=render(template.Subject||'[{{ticketNumber}}] {{requestType}} - IT processing').replace(/[\r\n\t]+/g,' ').trim();
   const body=render(template.Body||'Dear Team,\n\nPlease process the following approved identity service request.\n\nTicket: {{ticketNumber}}\n{{items}}\n\nBusiness justification: {{justification}}\n\nPlease confirm completion to IT. Use the approved secure channel for credentials.\n\nRegards,\nInformation Technology Department');
-  return {templateId:template.TemplateId,content:{...recipients,subject,body,name:template.TemplateName||'General processing',systems:[...new Set(rows.map(row=>row.system))]}};
+  return {templateId:template.TemplateId,content:applyProcessingCc({...recipients,subject,body,name:template.TemplateName||'General processing',systems:[...new Set(rows.map(row=>row.system))]},ticket)};
  });
 }
 
-export async function readEmailDrafts(query,requestId){
+export async function readEmailDrafts(query,requestId,ticket){
  const result=await query(`SELECT d.Id,d.Content,d.SentAt,u.Name AS SentBy FROM dbo.RequestEmailDrafts d
  LEFT JOIN dbo.Users u ON u.Id=d.SentBy WHERE d.RequestId=@request ORDER BY d.Position`,{request:p.id(requestId)});
- return result.recordset.map(row=>({id:row.Id,...JSON.parse(row.Content),sentAt:row.SentAt,sentBy:row.SentBy}));
+ return result.recordset.map(row=>{
+  const content=JSON.parse(row.Content);
+  return {id:row.Id,...(row.SentAt?content:applyProcessingCc(content,ticket)),sentAt:row.SentAt,sentBy:row.SentBy};
+ });
 }
 
 // The caller holds the request lock so approval and legacy draft initialization serialize.

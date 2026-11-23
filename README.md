@@ -10,6 +10,8 @@ Start with the SSMS steps below. Further documentation:
 - [Verification and SQL integration tests](docs/TESTING.md)
 - [Local mock users, password 1234, and data import](docs/MOCK-DATA.md)
 - [AD-only sign-in and existing database roles](docs/AD-SETUP.md)
+- [Department and branch approvers by system ID](docs/APPROVER-ASSIGNMENTS.md)
+- [Roles, Admin permissions and timed acting appointments](docs/ROLES-AND-ACTING.md)
 
 ## Requirements
 
@@ -45,6 +47,8 @@ Open each file from this backend's `sql` folder in SSMS. Review it, then execute
 | 11 | [011-mock-data-support.sql](sql/011-mock-data-support.sql) | Adds development-account markers and import provenance; advances schema version to 8. |
 | 12 | [012-hybrid-auth.sql](sql/012-hybrid-auth.sql) | Records local/AD session and MFA provenance; advances schema version to 9. |
 | 13 | [013-ad-self-enrollment.sql](sql/013-ad-self-enrollment.sql) | Verified AD employee enrollment, optional unique email, temporary hashed proofs; schema version 10. |
+| 14 | [014-organization-approvers.sql](sql/014-organization-approvers.sql) | Department/branch assignments by system ID and exact pending-step assignees; schema version 11. |
+| 15 | [015-roles-and-acting-assignments.sql](sql/015-roles-and-acting-assignments.sql) | Admin, timed acting appointments and live scoped/role authorization; schema version 12. |
 
 The scripts use database name `CBC_UIDMS`. If you change that name, update the database references in the SQL scripts and set `DB_NAME` in your environment.
 
@@ -90,7 +94,7 @@ Check the connection and privilege boundary:
 npm.cmd run db:check
 ```
 
-Expected database `CBC_UIDMS`, schema version `9` after script 012, nonzero systems and request types, `IsDbOwner=0`, `IsSysadmin=0`, and no update or delete permission on audit events.
+Expected database `CBC_UIDMS`, schema version `12` after script 015, nonzero systems and request types, `IsDbOwner=0`, `IsSysadmin=0`, and no update or delete permission on audit events.
 
 The current deployment uses AD-only sign-in. After directory verification, the returned employee ID matches an existing SQL user and retains that user's role/access. Local passwords and mock login have been retired without deleting business records. Follow the [AD-only setup guide](docs/AD-SETUP.md).
 
@@ -136,7 +140,11 @@ Open **System Email Templates** from the frontend profile or navigation. The fro
 
 Final approval saves a copy of the draft per configured group, plus a general draft for any systems without a template. IT reviews and sends each draft manually from **Processing drafts**, then records the confirmation. For a ticket approved before migration 008, IT can create the drafts from the ticket screen. Existing draft snapshots retain their content when templates are edited or removed.
 
-Admins can save an optional approval chain per template group and request type. It applies when a ticket is submitted or replaced before review. A mixed-system ticket combines the applicable chains, including the default chain for any systems without an override. Reset/unlock remains CITO-only. Remove a group's approval overrides before deleting the template.
+All processing drafts, including new-user requests, copy the submitter's recorded email when available plus `shafi@combankbd.com` and `hailyalgewatte@combankbd.com`. Additional template CCs remain and duplicates are removed. Existing unsent drafts receive this rule when opened; already sent snapshots remain unchanged. Required recipients are preserved through Copy draft, Open Gmail and the server's send-confirmation endpoint. Deploy both backend and frontend updates; this change requires no database script.
+
+Admins can save an optional approval chain per template group and request type. It applies when a ticket is submitted or replaced before review. A mixed-system ticket combines the applicable chains, including the default chain for any systems without an override. Reset/unlock starts with CITO-only approval and supports the same workflow configuration. Remove a group's approval overrides before deleting the template.
+
+In **Workflow studio**, a recently authenticated Super Admin selects a service, adds/removes approval roles and changes their order. The preview shows Submitted → selected approvals → Processing → Completed. Enable **Update pending steps on requests already under approval** to apply the edit to ongoing requests; completed decisions and their audit metadata remain intact, open queries remain paused until answered, and processing/completed tickets are unchanged. Clear the checkbox to affect new requests only. Actual saved request steps drive the frontend approval journey and action buttons, with periodic/focus refresh and an immediate data refresh after saving. No database script is required for this update.
 
 The frontend uses port 4000 on the same hostname in Vite development and same-origin `/api` in a production build. For a separate API origin, set `VITE_UIDMS_API_ORIGIN` at build time and allow the frontend origin in `ALLOWED_ORIGINS`.
 

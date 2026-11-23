@@ -3,6 +3,7 @@ import {p} from '../../core/db.js';
 import {requireCondition} from '../../core/errors.js';
 import {id,parse,text,uuidParam,z} from '../../core/validation.js';
 import {audit} from '../audit/service.js';
+import {isAdministrator} from '../auth/authorization.js';
 import {recentAuth,roles} from '../auth/service.js';
 import {version} from '../requests/schemas.js';
 import {mergeApprovalChains} from '../requests/system-workflows.js';
@@ -13,7 +14,7 @@ const approval=z.object({steps:z.array(z.enum(['Manager','HR','IT','CITO','COO']
 
 export function emailTemplateRoutes(db){
  const router=Router();
- router.use('/system-email-templates',roles('IT','Platform Admin','Super Admin'));
+ router.use('/system-email-templates',roles('IT','Admin','Super Admin'));
  router.get('/system-email-templates',async(req,res)=>{
   const {recordsets:[templates,systems,members,overrides]}=await db.query(`SELECT * FROM dbo.SystemEmailTemplates ORDER BY Name;
     SELECT Id AS id,Name AS name,Active AS active FROM dbo.Systems ORDER BY Name;
@@ -58,7 +59,7 @@ export function emailTemplateRoutes(db){
     membershipChanged=membership.length!==systemIds.length||membership.some(row=>!systemIds.includes(row.SystemId));
     if(membershipChanged){
      const overrides=(await query('SELECT TypeCode FROM dbo.SystemApprovalOverrides WHERE TemplateId=@id',{id:p.id(templateId)})).recordset;
-     requireCondition(req.user.Role!=='IT'||!overrides.length,403,'ADMIN_REQUIRED','An administrator must change the systems on a group with approval overrides.');
+     requireCondition(isAdministrator(req.user)||!overrides.length,403,'ADMIN_REQUIRED','An administrator must change the systems on a group with approval overrides.');
      await query('DELETE dbo.SystemEmailTemplateSystems WHERE TemplateId=@id',{id:p.id(templateId)});
     }
     await query('UPDATE dbo.SystemEmailTemplates SET Name=@name,Subject=@subject,Body=@body,Recipients=@recipients,IsServiceDefault=@serviceDefault WHERE Id=@id',{...params,id:p.id(templateId)});
@@ -85,9 +86,8 @@ export function emailTemplateRoutes(db){
   });
   res.status(204).end();
  });
- router.put('/system-email-templates/:id/workflows/:code',roles('Platform Admin','Super Admin'),recentAuth,async(req,res)=>{
+ router.put('/system-email-templates/:id/workflows/:code',roles('Admin','Super Admin'),recentAuth,async(req,res)=>{
   const templateId=uuidParam(req),typeCode=parse(z.string().regex(/^[a-z-]{1,50}$/),req.params.code),{steps}=parse(approval,req.body);
-  requireCondition(typeCode!=='reset',400,'FIXED_APPROVAL_CHAIN','Reset/unlock keeps its CITO-only approval.');
   await db.transaction(async query=>{
    const group=await loadTemplate(query,templateId);
    requireCondition(!group.Category||group.Category===categoryForType(typeCode),400,'WORKFLOW_SERVICE_MISMATCH');
@@ -95,8 +95,7 @@ export function emailTemplateRoutes(db){
    const type=(await query('SELECT IncludesHr FROM dbo.RequestTypes WITH (UPDLOCK,HOLDLOCK) WHERE Code=@type AND Active=1',params)).recordset[0];
    requireCondition(type,404,'REQUEST_TYPE_NOT_FOUND');
    if(steps.length){
-    const required=['IT','CITO','COO',...(type.IncludesHr?['Manager','HR']:[])];
-    requireCondition(steps.length===new Set(steps).size&&required.every(role=>steps.includes(role)),400,'INVALID_APPROVAL_CHAIN',`Include each required stage once (${required.join(', ')}).`);
+    requireCondition(steps.length===new Set(steps).size,400,'INVALID_APPROVAL_CHAIN','Include each approval role only once.');
     const baseline=(await query('SELECT Role FROM dbo.WorkflowSteps WHERE TypeCode=@type ORDER BY Position',params)).recordset;
     const otherRules=(await query('SELECT Steps FROM dbo.SystemApprovalOverrides WHERE TypeCode=@type AND TemplateId<>@id',params)).recordset;
     mergeApprovalChains([baseline.map(row=>row.Role),...otherRules.map(row=>JSON.parse(row.Steps)),steps]);

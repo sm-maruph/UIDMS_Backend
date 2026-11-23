@@ -8,10 +8,12 @@ import {assertVersion} from '../requests/policy.js';
 import {version} from '../requests/schemas.js';
 import {roles,recentAuth} from '../auth/service.js';
 import {audit,notify} from '../audit/service.js';
-import {createEmailDrafts,readEmailDrafts,emailFields} from './system-email.js';
+import {createEmailDrafts,readEmailDrafts,processingEmailFields} from './system-email.js';
+import {applyProcessingCc} from './email-recipients.js';
+import {newUserCustodian} from './custodian.js';
 
 const processingStates=['Approved','IT processing','HO processing'];
-const sentDraft=z.object({confirmedSent:z.literal(true),email:emailFields.extend({body:text(200000)}).strict().optional()}).strict();
+const sentDraft=z.object({confirmedSent:z.literal(true),email:processingEmailFields.strict().optional()}).strict();
 
 async function requireEmailDraftsSent(query,requestId){
  const {recordset}=await query(`SELECT TOP (1) Id FROM dbo.RequestEmailDrafts
@@ -21,27 +23,27 @@ async function requireEmailDraftsSent(query,requestId){
 
 export function fulfilmentRoutes(db,config){
  const router=Router();
- router.get('/requests/:id/email-drafts',roles('IT'),async(req,res)=>{
+ router.get('/requests/:id/email-drafts',roles('IT','Admin','Super Admin'),async(req,res)=>{
   const requestId=uuidParam(req);
   const ticket=await loadTicket(db.query,requestId,req.user);
   requireCondition([...processingStates,'Completed'].includes(ticket.Status),409,'FINAL_APPROVAL_REQUIRED');
-  res.json({items:await readEmailDrafts(db.query,requestId)});
+  res.json({items:await readEmailDrafts(db.query,requestId,ticket)});
  });
  // Initialize drafts for tickets approved before this feature was installed.
- router.post('/requests/:id/email-drafts',roles('IT'),async(req,res)=>{
+ router.post('/requests/:id/email-drafts',roles('IT','Admin','Super Admin'),async(req,res)=>{
   const requestId=uuidParam(req);
   const items=await db.transaction(async query=>{
    const ticket=await loadTicket(query,requestId,req.user,{lock:true});
    requireCondition(ticket.Status==='Approved',409,'FINAL_APPROVAL_REQUIRED');
    requireCondition(ticket.RequesterId!==req.user.Id&&ticket.SubjectUserId!==req.user.Id,403,'SEPARATION_OF_DUTIES');
-   const drafts=await readEmailDrafts(query,requestId);
+   const drafts=await readEmailDrafts(query,requestId,ticket);
    if(drafts.length)return drafts;
    await createEmailDrafts(query,ticket);
-   return readEmailDrafts(query,requestId);
+   return readEmailDrafts(query,requestId,ticket);
   });
   res.json({items});
  });
- router.post('/requests/:id/email-drafts/:draftId/sent',roles('IT'),async(req,res)=>{
+ router.post('/requests/:id/email-drafts/:draftId/sent',roles('IT','Admin','Super Admin'),async(req,res)=>{
   const requestId=uuidParam(req),draftId=uuidParam(req,'draftId'),body=parse(sentDraft,req.body);
   await db.transaction(async query=>{
    const ticket=await loadTicket(query,requestId,req.user,{lock:true});
@@ -51,14 +53,15 @@ export function fulfilmentRoutes(db,config){
    const row=(await query('SELECT Content,SentAt FROM dbo.RequestEmailDrafts WHERE Id=@draft AND RequestId=@request',params)).recordset[0];
    requireCondition(row,404,'DRAFT_NOT_FOUND');
    if(row.SentAt)return;
-   const content={...JSON.parse(row.Content),...body.email};
+   const content=applyProcessingCc({...JSON.parse(row.Content),...body.email},ticket);
+   parse(processingEmailFields,content);
    requireCondition(content.to.length&&content.subject.trim()&&content.body.trim(),400,'INCOMPLETE_EMAIL','Enter a recipient, subject and body for this draft.');
    await query('UPDATE dbo.RequestEmailDrafts SET Content=@content,SentBy=@actor,SentAt=SYSUTCDATETIME() WHERE Id=@draft AND RequestId=@request',{...params,content:p.json(content),actor:p.id(req.user.Id)});
    await audit(query,req,'fulfilment.email_marked_sent',requestId,{draftId});
   });
   res.status(204).end();
  });
- router.post('/requests/:id/processing',roles('IT'),async(req,res)=>{
+ router.post('/requests/:id/processing',roles('IT','Admin','Super Admin'),async(req,res)=>{
   const requestId=uuidParam(req),body=parse(z.object({version,reference:text(250),notes:text(2000,0).default('')}).strict(),req.body);
   await db.transaction(async query=>{
    const ticket=await loadTicket(query,requestId,req.user,{lock:true});assertVersion(ticket,body.version);requireCondition(['Approved','IT processing'].includes(ticket.Status),409,'NOT_READY_FOR_PROCESSING');
@@ -68,7 +71,7 @@ export function fulfilmentRoutes(db,config){
    await audit(query,req,'fulfilment.processing_recorded',requestId,{reference:body.reference});await notify(query,ticket.RequesterId,requestId,`${ticket.TicketNumber}: processing started.`);
   });res.status(204).end();
  });
- router.post('/requests/:id/complete',roles('IT'),recentAuth,async(req,res)=>{
+ router.post('/requests/:id/complete',roles('IT','Admin','Super Admin'),recentAuth,async(req,res)=>{
   const requestId=uuidParam(req),body=parse(z.object({version,notes:text(2000),confirmedProvisioned:z.literal(true),credentials:z.array(z.object({employeeId:text(40),systemId:id,username:text(150),password:z.string().min(1).max(256)}).strict()).max(300).default([])}).strict(),req.body);
   await db.transaction(async query=>{
    const ticket=await loadTicket(query,requestId,req.user,{lock:true});assertVersion(ticket,body.version);requireCondition(processingStates.includes(ticket.Status),409,'NOT_READY_FOR_COMPLETION');requireCondition(ticket.RequesterId!==req.user.Id&&ticket.SubjectUserId!==req.user.Id,403,'SEPARATION_OF_DUTIES');
@@ -91,7 +94,7 @@ export function fulfilmentRoutes(db,config){
    if(ticket.TypeCode==='employee-deactivate'){
     for(const userId of subjects){
      requireCondition(userId!==req.user.Id,403,'SELF_DEACTIVATION_FORBIDDEN');
-     const user=(await query('SELECT Role FROM dbo.Users WITH(UPDLOCK,HOLDLOCK) WHERE Id=@id',{id:p.id(userId)})).recordset[0];requireCondition(!['Platform Admin','Super Admin'].includes(user.Role),403,'ADMIN_DEACTIVATION_REQUIRES_ADMIN');
+     const user=(await query('SELECT Role FROM dbo.Users WITH(UPDLOCK,HOLDLOCK) WHERE Id=@id',{id:p.id(userId)})).recordset[0];requireCondition(!['Admin','Platform Admin','Super Admin'].includes(user.Role),403,'ADMIN_DEACTIVATION_REQUIRES_ADMIN');
      await query('UPDATE dbo.AccessGrants SET RevokedAt=SYSUTCDATETIME() WHERE UserId=@id AND RevokedAt IS NULL; UPDATE dbo.Users SET Active=0,UpdatedAt=SYSUTCDATETIME() WHERE Id=@id; UPDATE dbo.Sessions SET RevokedAt=SYSUTCDATETIME() WHERE UserId=@id',{id:p.id(userId)});
     }
    }else{
@@ -115,7 +118,7 @@ export function fulfilmentRoutes(db,config){
    }
    if(ticket.TypeCode==='movement')await query('UPDATE dbo.Users SET BranchId=@branch,DepartmentId=@department,UpdatedAt=SYSUTCDATETIME() WHERE Id=@user; UPDATE dbo.Sessions SET RevokedAt=SYSUTCDATETIME() WHERE UserId=@user',{branch:p.id(ticket.DestinationBranchId),department:p.id(ticket.DestinationDepartmentId),user:p.id(ticket.SubjectUserId)});
    if(body.credentials.length){
-    const custodian=ticket.TypeCode==='new-user'?(await query("SELECT TOP(1) ActorId FROM dbo.RequestSteps WHERE RequestId=@id AND Role IN ('Branch manager','Department head') AND Status='Approved' ORDER BY Position",{id:p.id(requestId)})).recordset[0]?.ActorId:null;
+    const custodian=ticket.TypeCode==='new-user'?await newUserCustodian(query,ticket):null;
     const recipient=ticket.TypeCode==='new-user'?custodian:ticket.SubjectUserId||ticket.RequesterId;
     requireCondition(recipient,409,'CUSTODIAN_REQUIRED');
     await query('INSERT dbo.CredentialDeliveries(RequestId,RecipientId,Ciphertext,ExpiresAt) VALUES(@request,@recipient,@cipher,DATEADD(hour,24,SYSUTCDATETIME()))',{request:p.id(requestId),recipient:p.id(recipient),cipher:p.long(seal(JSON.stringify(body.credentials),config.DATA_ENCRYPTION_KEY,`delivery:${requestId}:${recipient}`))});

@@ -4,7 +4,7 @@ import {requestRoles,formResetSystems} from '../../frontend/src/components/reque
 import {defaultDepartments} from '../../frontend/src/components/departments.js';
 import {defaultDesignations} from '../../frontend/src/components/designations.js';
 const q=value=>`N'${value.replaceAll("'","''")}'`;
-const roles=['User','Branch manager','Department head','IT','CITO','COO','HR','Platform Admin','Super Admin'];
+const roles=['User','Branch manager','Department head','IT','CITO','COO','HR','Admin','Platform Admin','Super Admin'];
 const types=[
  ['new-id','New ID creation',['Manager','IT','CITO','COO']],
  ['new-user','New ID creation (on behalf)',['Manager','HR','IT','CITO','COO']],

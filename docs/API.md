@@ -96,7 +96,7 @@ Authenticated POST/PUT/PATCH/DELETE calls with no domain payload should still se
 | Method | Path | Body / behavior | Authorization |
 | --- | --- | --- | --- |
 | GET | `/profile` | Current safe profile, current `access` grants, and `canEditAccess` capability | Signed in |
-| PATCH | `/profile` | `{version,designationId,access?,signatureBase64?}`; atomic self-profile update | Self; access editing only for marked local mock accounts; audited |
+| PATCH | `/profile` | `{version,designationId,access?,signatureBase64?}`; atomic self-profile update | Self; direct access editing only for IT/Admin/Super Admin; audited |
 | GET | `/profile/signature` | Current user's PNG signature (200); no saved signature returns 204 with no body | Self |
 | PUT | `/profile/signature` | `{base64}` PNG, max 256 KiB | Self; audited |
 | GET | `/lookups` | Organization IDs, systems/roles, request types/workflows, mailing groups | Signed in |
@@ -180,7 +180,7 @@ Use operation `revoke` only for deactivation request types, `reset` only for `re
 
 Drive requests remain separate: `idrive` displays **I Drive / S Drive Access** and accepts the `IDrive` or `S Drive` system; `n-drive` displays **N Drive Access** and accepts only `N Drive`. Apply `sql/007-separate-drive-requests.sql` to update an existing catalogue.
 
-Reset/unlock (`typeCode: "reset"`) is a self-service request: submit exactly your own employee record. Justification may be omitted or empty. Its workflow is **User → CITO → IT processing → Completed**, without manager, IT-review or COO approval. Other request types still require a justification of at least 10 characters. Apply `sql/005-reset-unlock-workflow.sql` to update existing database templates; previously submitted SQL tickets retain their original approval snapshots.
+Reset/unlock (`typeCode: "reset"`) is a self-service request: submit exactly your own employee record. Justification may be omitted or empty. Its initial default is **User → CITO → Processing → Completed**, and Admin or Super Admin can change its approval roles and order in Workflow studio, like other request types. Other request types still require a justification of at least 10 characters. Migration 005 initializes the CITO-only default; do not rerun it to apply an admin workflow edit.
 
 For `movement`, include `subjectUserId`, source `branchId`/`departmentId`, destination `destinationBranchId`/`destinationDepartmentId`, and one normalized person whose branch/department represent the destination. Only IT/HR may initiate it. The server starts at `Employee review`; the selected employee must confirm destination access before manager approval begins. Other request types must omit the movement-only fields.
 
@@ -198,7 +198,7 @@ HR police values: `Completed`, `Pending`, `Special recommendation`. References: 
 | POST | `/requests/:id/queries` | `{version,recipientId,message}`; assigned reviewer only; message max 350 characters |
 | POST | `/queries/:id/reply` | `{version,message}`; intended recipient only; once per open query |
 
-The server validates recipients against the requester, movement employee and eligible workflow participants. Raising a query pauses approval; its recipient's response restores the previous review status. An old query cannot be used to modify a completed ticket. Query/response dashboard counts count **tickets**, while inbox counts count **threads**, so these can differ.
+The server validates recipients against the requester, movement employee and eligible workflow participants. Raising a query pauses approval; its recipient's response restores the review status. If an admin updates pending steps while a query is open, the query remains open and returns to the updated remaining chain. If no approvals remain, the response advances the request to Approved and creates processing drafts. An old query cannot be used to modify a completed ticket. Query/response dashboard counts count **tickets**, while inbox counts count **threads**, so these can differ.
 
 ## Fulfilment and credential delivery
 
@@ -220,6 +220,8 @@ On completion the API records the approved access changes. It does not actually 
 
 If a ticket has group drafts, IT confirms each draft before recording processing or completion. The API records the IT confirmation. The actual send occurs in the mail client.
 
+Every processing draft copies `shafi@combankbd.com`, `hailyalgewatte@combankbd.com`, and the request submitter's recorded email when available. The current directory email is preferred, with the submission snapshot as fallback; new employee beneficiaries and requested future mailboxes do not replace the submitter. Existing template CCs remain, with case-insensitive deduplication. Unsent draft responses include `requiredCc` and apply this rule even to previously saved drafts. Sent snapshots retain their original recipients. The server also restores required CCs when a send confirmation is recorded, regardless of client edits. Templates support 20 optional CC recipients; processing drafts allow 23 total after the three required recipients are merged. The frontend preserves required CCs when copying, opening Gmail or recording a manual send. No SQL migration is needed.
+
 ## System email templates
 
 | Method | Path | Behavior |
@@ -228,7 +230,7 @@ If a ticket has group drafts, IT confirms each draft before recording processing
 | POST | `/system-email-templates` | IT and Admin create a template using `{category,name,systemIds,to,cc,subject,body}`. Use an empty `systemIds` array for a service-wide default. `to` and `cc` are arrays of addresses |
 | PUT | `/system-email-templates/:id` | Update the template using the same fields plus `version` |
 | DELETE | `/system-email-templates/:id` | Delete using `{version}` after any approval overrides are removed |
-| PUT | `/system-email-templates/:id/workflows/:code` | Platform Admin or Super Admin saves `{steps:[...]}` for the template group and request type; `steps:[]` restores the default |
+| PUT | `/system-email-templates/:id/workflows/:code` | Admin or Super Admin saves `{steps:[...]}` for the template group and request type; `steps:[]` restores the default |
 
 Writes to template and workflow configuration require recent sign-in. Use `{{items}}` in the body to render only the employee and system rows assigned to the draft. Other item variables render the unique values across those rows.
 
@@ -246,15 +248,25 @@ Writes to template and workflow configuration require recent sign-in. Use `{{ite
 | GET | `/notifications` | Paginated current-user notification history |
 | POST | `/notifications/:id/read` | `{}`; acknowledge own notification |
 | GET | `/audit?event=...` | Paginated audit events; Platform Admin/Super Admin |
-| PUT | `/admin/workflows/:code` | `{roles:["Manager","HR","IT","CITO","COO"]}`; Super Admin, fresh login |
-| POST | `/admin/mailing-groups` | `{name,email}`; Super Admin, allowed domain |
-| PUT | `/admin/mailing-groups/:id/members` | `{userIds:[...]}`; Super Admin, audited |
+| PUT | `/admin/workflows/:code` | `{roles:["CITO"],expectedRoles?:[...],applyToOpenRequests?:true}`; Admin/Super Admin, fresh login; returns `{updatedRequests}` |
+| POST | `/admin/mailing-groups` | `{name,email}`; Admin/Super Admin, allowed domain |
+| PUT | `/admin/mailing-groups/:id/members` | `{userIds:[...]}`; Admin/Super Admin, audited |
 
-Existing tickets retain their snapshotted approval steps when workflow templates change. Required approval stages cannot be removed through this API. `Manager` resolves to the correct branch manager/department head on submission. HR remains mandatory for new-user, movement, branch-transfer and employee-deactivation requests.
+Workflow roles are a unique, ordered list of one to five entries selected from `Manager`, `HR`, `IT`, `CITO`, and `COO`. Submitted, movement employee review, Processing, and Completed are lifecycle stages rather than configurable approver roles. `Manager` resolves to the relevant branch manager or department head and retains organization scope. HR clearance checks apply when an HR approval is configured for a new-user request. System-specific overrides remain applicable; conflicting stage orders are rejected transactionally.
+
+`applyToOpenRequests` defaults to false in the API; Workflow studio exposes it as an explicit checkbox, initially checked. When true, Employee review, Pending, In review, and Query requests of that type receive the updated remaining approval steps. Completed approval rows, actors, remarks, timestamps and positions are preserved, even for roles removed from the new default. Already approved, processing, completed, rejected or cancelled tickets remain unchanged. Removing all remaining approvals advances a request to Approved and creates drafts; an open query waits for its reply first. Each affected request gets a new row version and a workflow-change audit event. `expectedRoles` protects against another administrator changing the same default; a mismatch returns `409 STALE_WORKFLOW`. No SQL migration is required.
+
+Ticket detail includes ordered `workflowSteps` with `position`, `role`, `status`, organization scope and decision metadata, including Waiting rows. The frontend renders these actual steps and checks server-computed `reviewableByMe` for action buttons, including timed acting authority. Lists include current step scope, `reviewedByMe` and `deliveryForMe`; the server remains the authorization boundary. New-user credentials still go to the approved manager/head, or the explicit scope assignment (then a unique active legacy scoped manager/head) if that approval was omitted. Missing or ambiguous custody configuration blocks delivery with `409 APPROVER_REQUIRED`.
 
 Use the paginated request collection with permitted scope/status/search for ticket reports and the user-access collection for current-access reports. There is no anonymous bulk export or unlimited `pageSize=all` endpoint. Stream multiple bounded pages into an authorized export and protect exported PII; prevent spreadsheet formula injection if later exporting CSV.
 
+## Acting appointments and current permissions
+
+[Roles and acting API](ROLES-AND-ACTING.md) documents the permission matrix and `GET /acting-options`, `GET /acting-candidates`, `GET /acting-assignments`, `POST /acting-assignments`, and `POST /acting-assignments/:id/end`. Appointment writes require a fresh session, Origin and CSRF. Authentication refreshes effective authority on each request, including expiry within an existing session. Migration 015/schema 12 is required.
+
 ## Errors
+
+Department/branch assignment management is available to IT, Admin and Super Admin through `GET /approver-assignments` and `PUT /approver-assignments/:scopeId`. Writes require a fresh session and `{employeeId,version}` with the current mapping version (null for first assignment). They reconcile waiting manager steps while preserving completed approvals. See [approver assignment setup and API](APPROVER-ASSIGNMENTS.md). Session/profile responses include `canApproveRequests`; this is a UI capability, and exact ticket assignments remain authoritative.
 
 Errors have `{error:{code,message,requestId}}`. Typical status codes:
 

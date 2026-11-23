@@ -17,7 +17,7 @@ test('SQL Server schema and full request/query/approval/delivery lifecycle',{ski
  try{
   await db.connect();
   assert.equal((await db.query("SELECT COUNT(*) AS Count FROM sys.tables WHERE is_ms_shipped=0")).recordset[0].Count,0,'Test database must be empty; test never drops or truncates data.');
-  for(const file of ['002-schema.sql','003-reference-data.sql','008-system-email-templates.sql','009-service-email-templates.sql','010-directory-identities.sql','011-mock-data-support.sql','012-hybrid-auth.sql']){
+  for(const file of ['002-schema.sql','003-reference-data.sql','008-system-email-templates.sql','009-service-email-templates.sql','010-directory-identities.sql','011-mock-data-support.sql','012-hybrid-auth.sql','013-ad-self-enrollment.sql','014-organization-approvers.sql','015-roles-and-acting-assignments.sql']){
    const source=(await readFile(new URL(`../sql/${file}`,import.meta.url),'utf8')).replaceAll('USE CBC_UIDMS;',`USE [${config.DB_NAME}];`);
    for(const batch of source.split(/^GO\s*$/im))if(batch.trim())await db.query(batch);
   }

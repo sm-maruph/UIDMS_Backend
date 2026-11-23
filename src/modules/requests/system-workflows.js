@@ -1,6 +1,5 @@
 import {p} from '../../core/db.js';
 import {requireCondition} from '../../core/errors.js';
-import {workflowRoles} from './policy.js';
 import {categoryForType} from '../fulfilment/email-services.js';
 
 // Combine the applicable chains into one ticket-wide sequence while honoring each chain's order.
@@ -25,7 +24,6 @@ export function mergeApprovalChains(chains){
 }
 
 export async function approvalPlan(query,body){
- if(body.typeCode==='reset')return workflowRoles('reset').map((Role,index)=>({Role,Position:index+1}));
  const type=p.str(body.typeCode,50);
  const baseline=(await query('SELECT Role,Position FROM dbo.WorkflowSteps WHERE TypeCode=@type ORDER BY Position',{type})).recordset;
  requireCondition(baseline.length,409,'WORKFLOW_NOT_CONFIGURED');

@@ -3,7 +3,7 @@ import {p} from '../../core/db.js';
 import {z,id,text,parse} from '../../core/validation.js';
 import {requireCondition} from '../../core/errors.js';
 import {publicUser,userColumns} from '../auth/service.js';
-import {mockLoginAllowed} from '../auth/mock-policy.js';
+import {canRecordAccess} from '../auth/authorization.js';
 import {audit} from '../audit/service.js';
 import {validFile} from '../attachments/routes.js';
 import {version} from '../requests/schemas.js';
@@ -14,7 +14,7 @@ const editSchema=z.object({version,designationId:id.nullable(),access:z.array(ac
 const key=row=>`${row.SystemId}:${row.SystemRoleId||''}`;
 const readAccess='SELECT g.Id,g.SystemId,s.Name AS SystemName,g.SystemRoleId,sr.Name AS RoleName,g.Username,g.GrantedAt,g.SourceRequestId FROM dbo.AccessGrants g JOIN dbo.Systems s ON s.Id=g.SystemId LEFT JOIN dbo.SystemRoles sr ON sr.Id=g.SystemRoleId WHERE g.UserId=@id AND g.RevokedAt IS NULL ORDER BY s.Name,sr.Name';
 
-async function updateMockAccess(query,userId,access){
+async function updateRecordedAccess(query,userId,access){
  const params={id:p.id(userId)};
  const existing=(await query(readAccess,params)).recordset;
  const previous=new Map(existing.map(row=>[key(row),row]));
@@ -44,7 +44,7 @@ export function profileRoutes(db,config){
   const current=(await db.query(`SELECT ${userColumns} FROM dbo.Users u WHERE u.Id=@id`,params)).recordset[0];
   requireCondition(current,404,'USER_NOT_FOUND');
   const access=(await db.query(readAccess,params)).recordset;
-  res.json({user:publicUser(current),access,canEditAccess:mockLoginAllowed(config,req,current)});
+  res.json({user:publicUser(current),access,canEditAccess:canRecordAccess(req.user)});
  });
  router.patch('/profile',async(req,res)=>{
   const body=parse(editSchema,req.body);
@@ -55,12 +55,12 @@ export function profileRoutes(db,config){
    const current=(await query('SELECT Id,DesignationId,IsDemo,Version FROM dbo.Users WITH(UPDLOCK,HOLDLOCK) WHERE Id=@id',params)).recordset[0];
    requireCondition(current,404,'USER_NOT_FOUND');
    requireCondition(current.Version.toString('hex')===body.version,409,'STALE_VERSION','Your profile changed. Reopen Edit profile and try again.');
-   if(body.access!==undefined)requireCondition(mockLoginAllowed(config,req,current),403,'ACCESS_APPROVAL_REQUIRED','Current access changes require an approved request outside local mock mode.');
+   if(body.access!==undefined)requireCondition(canRecordAccess(req.user),403,'ACCESS_APPROVAL_REQUIRED','Only IT, Admin and Super Admin may directly record their own system access. Submit an access request for approval.');
    if(body.designationId&&body.designationId!==current.DesignationId)requireCondition((await query("SELECT Id FROM dbo.Lookups WHERE Id=@designation AND Kind='designation' AND Active=1",{designation:p.id(body.designationId)})).recordset.length,400,'INVALID_DESIGNATION');
-   const access=body.access===undefined?null:await updateMockAccess(query,req.user.Id,body.access);
+   const access=body.access===undefined?null:await updateRecordedAccess(query,req.user.Id,body.access);
    const updated=(await query(`UPDATE dbo.Users SET DesignationId=@designation,Signature=CASE WHEN @hasSignature=1 THEN @signature ELSE Signature END,SignatureContentType=CASE WHEN @hasSignature=1 THEN 'image/png' ELSE SignatureContentType END,UpdatedAt=SYSUTCDATETIME() WHERE Id=@id; SELECT ${userColumns} FROM dbo.Users u WHERE u.Id=@id`,{...params,designation:p.id(body.designationId),hasSignature:p.bit(Boolean(signature)),signature:p.bytes(signature)})).recordset[0];
    await audit(query,req,'profile.updated',req.user.Id,{previousDesignationId:current.DesignationId,designationId:body.designationId,signatureChanged:Boolean(signature)});
-   if(access)await audit(query,req,'mock.profile_access_updated',req.user.Id,access);
+   if(access)await audit(query,req,'profile.access_updated',req.user.Id,access);
    return publicUser(updated);
   });
   res.json({user});

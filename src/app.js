@@ -7,6 +7,8 @@ import {randomUUID} from 'node:crypto';
 import {HttpError,errorHandler,requireCondition} from './core/errors.js';
 import {createAuth} from './modules/auth/service.js';
 import {authRoutes} from './modules/auth/routes.js';
+import {delegationRoutes} from './modules/directory/delegations.js';
+import {approverRoutes} from './modules/directory/approvers.js';
 import {directoryRoutes} from './modules/directory/routes.js';
 import {requestRoutes} from './modules/requests/routes.js';
 import {queryRoutes} from './modules/queries/routes.js';
@@ -50,7 +52,7 @@ export function createApp({db,config,directory}){
  });
  app.use('/api/auth',authRoutes(db,auth,config));
  const api=express.Router();api.use(auth.authenticate);
- api.use(directoryRoutes(db,config));api.use('/requests',requestRoutes(db));api.use('/queries',queryRoutes(db));api.use(fulfilmentRoutes(db,config));api.use(emailTemplateRoutes(db));api.use(attachmentRoutes(db));api.use(dashboardRoutes(db));api.use('/admin',adminRoutes(db,config));
+ api.use(directoryRoutes(db,config));api.use(approverRoutes(db));api.use(delegationRoutes(db));api.use('/requests',requestRoutes(db));api.use('/queries',queryRoutes(db));api.use(fulfilmentRoutes(db,config));api.use(emailTemplateRoutes(db));api.use(attachmentRoutes(db));api.use(dashboardRoutes(db));api.use('/admin',adminRoutes(db,config));
  app.use('/api',api);
  app.use((req,res,next)=>next(new HttpError(404,'NOT_FOUND')));
  app.use(errorHandler);

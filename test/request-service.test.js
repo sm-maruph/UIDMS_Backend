@@ -10,7 +10,7 @@ import {user,actorId,otherId,branchId,departmentId,requestId} from './helpers.js
 const systemId='66666666-6666-4666-8666-666666666666';
 const roleId='77777777-7777-4777-8777-777777777777';
 const body=()=>({typeCode:'upgrade',branchId,departmentId,justification:'Business access upgrade required.',details:{upgradeDetails:{systems:['ICBS']}},people:[{employeeId:user.EmployeeId,name:user.Name,branchId,departmentId,details:{}}],items:[{employeeId:user.EmployeeId,systemId,systemRoleId:roleId,operation:'update'}],consent:true});
-function fixture(){
+function fixture(roles=['Manager','IT','CITO','COO']){
  const calls=[];
  const query=async(text,params)=>{
   calls.push({text,params});
@@ -18,7 +18,8 @@ function fixture(){
   if(text.startsWith('SELECT Id,Kind,Name FROM dbo.Lookups'))return {recordset:[{Id:branchId,Kind:'branch',Name:'Dhanmondi Branch'},{Id:departmentId,Kind:'department',Name:'Operations'}]};
   if(text.startsWith('SELECT Id,EmployeeId,Name'))return {recordset:[{...user}]};
   if(text.startsWith('SELECT s.Id'))return {recordset:[{Id:systemId,Name:'ICBS',RoleId:roleId}]};
-  if(text.startsWith('SELECT Role,Position FROM dbo.WorkflowSteps'))return {recordset:['Manager','IT','CITO','COO'].map((Role,index)=>({Role,Position:index+1}))};
+  if(text.startsWith('SELECT Role,Position FROM dbo.WorkflowSteps'))return {recordset:roles.map((Role,index)=>({Role,Position:index+1}))};
+  if(text.startsWith('SELECT a.UserId'))return {recordset:[{UserId:otherId,Active:true}]};
   if(text.startsWith('SELECT NEXT VALUE'))return {recordset:[{Value:123}]};
   return {recordset:[]};
  };
@@ -49,11 +50,11 @@ test('HR cannot approve a new-user request with incomplete clearance',async()=>{
  };
  await assert.rejects(decide({transaction:work=>work(query)},{user:reviewer},requestId,{version:'0000000000000001',decision:'approve'}),error=>error.code==='HR_CLEARANCE_INCOMPLETE');
 });
-test('reset without justification gets only CITO approval even with old workflow templates',async()=>{
+test('reset without justification follows its saved CITO-only workflow',async()=>{
  const value=body();value.typeCode='reset';delete value.justification;value.items[0].operation='reset';
  const parsed=parse(createRequest,value);assert.equal(parsed.justification,'');
  assert.equal(parse(createRequest.safeExtend({version}),{...value,version:'0000000000000001'}).justification,'');
- const {query,calls}=fixture();
+ const {query,calls}=fixture(['CITO']);
  const result=await createTicket({transaction:work=>work(query)},{user,ip:'192.0.2.1',id:randomUUID()},parsed);
  assert.ok(result.id);
  const steps=calls.filter(call=>call.text.startsWith('INSERT dbo.RequestSteps'));
@@ -61,6 +62,13 @@ test('reset without justification gets only CITO approval even with old workflow
  assert.equal(steps[0].params.branch.value,null);
  assert.deepEqual(workflowRoles('reset'),['CITO']);
  assert.throws(()=>parse(createRequest,{...value,typeCode:'upgrade'}));
+});
+
+test('reset requests honor customized saved role order rather than forcing CITO only',async()=>{
+ const value=body();value.typeCode='reset';value.justification='';value.items[0].operation='reset';
+ const {query,calls}=fixture(['COO','CITO']);
+ await createTicket({transaction:work=>work(query)},{user,ip:'192.0.2.1',id:randomUUID()},value);
+ assert.deepEqual(calls.filter(call=>call.text.startsWith('INSERT dbo.RequestSteps')).map(call=>call.params.role.value),['COO','CITO']);
 });
 test('CITO approval completes reset approval and sends it to processing without COO',async()=>{
  const calls=[];

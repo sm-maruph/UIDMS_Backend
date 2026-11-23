@@ -31,11 +31,11 @@ After changing `.env`, restart `npm run dev` in the backend and refresh the fron
 
 Sign in as `BD06653`, open **Admin settings → Organization setup**, and create a user with **Mock account (password 1234)** selected. Fill in its unique employee ID, email, name, role, branch and department, then save. The account is stored in SQL Server and can sign in immediately with its ID and `1234`. Ordinary accounts created with this checkbox cleared use the existing activation flow.
 
-Use the pencil beside your name in the sidebar to open **Edit profile**. You can change designation, add or remove current system/role assignments, and upload a PNG e-signature. These changes save together to SQL Server. Unchanged grants retain their original IDs, dates and request provenance; removed assignments are revoked rather than deleted. Direct access editing applies only to marked local mock profiles. Real accounts use approved requests for access changes. Portal role, employee ID, branch and department cannot be changed through this editor.
+Use the pencil beside your name in the sidebar to open **Edit profile**. You can change designation, add or remove current system/role assignments, and upload a PNG e-signature. These changes save together to SQL Server. Unchanged grants retain their original IDs, dates and request provenance; removed assignments are revoked rather than deleted. Direct access editing is restricted to IT, Admin and Super Admin, regardless of mock status. Other accounts use approved requests for access changes. Portal role, employee ID, branch and department cannot be changed through this editor.
 
 ## Import on another development installation
 
-1. Execute SQL scripts through `013-ad-self-enrollment.sql` in SSMS. Current API schema version is 10; script 011 supplies mock-data support.
+1. Execute SQL scripts through `015-roles-and-acting-assignments.sql` in SSMS. Current API schema version is 12; script 011 supplies mock-data support.
 2. In the backend `.env`, use `NODE_ENV=development`, `HOST=127.0.0.1`, a local `DB_SERVER`, and `MOCK_LOGIN_ENABLED=true`.
 3. From the backend folder, run:
 

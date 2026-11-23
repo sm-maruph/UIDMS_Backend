@@ -9,8 +9,8 @@ import {testConfig,user,actorId,otherId,branchId} from './helpers.js';
 const systemId='66666666-6666-4666-8666-666666666666';
 const roleId='77777777-7777-4777-8777-777777777777';
 const designationId='88888888-8888-4888-8888-888888888888';
-function setup({demo=true,enabled=true,remote=false,existing=[],choices=[{Id:systemId,RoleId:roleId}],designation=true}={}){
- const calls=[];const current={...user,IsDemo:demo,DesignationId:null};
+function setup({demo=true,enabled=true,remote=false,existing=[],choices=[{Id:systemId,RoleId:roleId}],designation=true,role='User'}={}){
+ const calls=[];const current={...user,Role:role,IsDemo:demo,DesignationId:null};
  const query=async(sql,params)=>{
   calls.push({sql,params});
   if(sql.startsWith('SELECT Id,DesignationId,IsDemo,Version'))return {recordset:[current]};
@@ -49,20 +49,20 @@ test('profile updates reject arbitrary fields, invalid designations and stale ve
  assert.equal(calls.some(call=>/^(INSERT|UPDATE)/.test(call.sql)),false);
 });
 
-test('direct current-access updates require a marked local mock user',async()=>{
+test('ordinary users cannot directly change access even in local mock mode',async()=>{
  for(const config of [{demo:false},{enabled:false},{remote:true}]){
   const {app,calls,body}=setup(config);const response=await request(app).patch('/profile').send({...body,access:[]});
   assert.equal(response.status,403);assert.equal(response.body.error.code,'ACCESS_APPROVAL_REQUIRED');assert.equal(calls.some(call=>/^(INSERT|UPDATE)/.test(call.sql)),false);
  }
 });
 
-test('mock profile access preserves unchanged grants and revokes only removed assignments',async()=>{
+test('authorized IT access editing preserves unchanged grants and revokes only removed assignments',async()=>{
  const existing=[{Id:otherId,SystemId:systemId,SystemRoleId:roleId,Username:'original.user',SourceRequestId:branchId},{Id:designationId,SystemId:branchId,SystemRoleId:null,Username:null}];
- const {app,calls,body}=setup({existing});
+ const {app,calls,body}=setup({existing,role:'IT'});
  const response=await request(app).patch('/profile').send({...body,access:[{systemId,systemRoleId:roleId,username:'original.user'},{systemId:actorId,systemRoleId:null,username:'new.user'}]});
  // Reject the new system until it is in the active catalogue; no earlier grant was revoked.
  assert.equal(response.status,400);assert.equal(calls.some(call=>/^(INSERT|UPDATE)/.test(call.sql)),false);
- const valid=setup({existing,choices:[{Id:systemId,RoleId:roleId},{Id:actorId,RoleId:null}]});
+ const valid=setup({role:'IT',existing,choices:[{Id:systemId,RoleId:roleId},{Id:actorId,RoleId:null}]});
  const saved=await request(valid.app).patch('/profile').send({...valid.body,access:[{systemId,systemRoleId:roleId,username:'original.user'},{systemId:actorId,systemRoleId:null,username:'new.user'}]});
  assert.equal(saved.status,200);
  const revoked=valid.calls.filter(call=>call.sql.startsWith('UPDATE dbo.AccessGrants SET RevokedAt'));
@@ -70,20 +70,20 @@ test('mock profile access preserves unchanged grants and revokes only removed as
  const added=valid.calls.filter(call=>call.sql.startsWith('INSERT dbo.AccessGrants'));
  assert.equal(added.length,1);assert.equal(added[0].params.system.value,actorId);assert.equal(added[0].params.id.value,actorId);
  assert.equal(valid.calls.some(call=>call.sql.startsWith('UPDATE dbo.AccessGrants SET Username')),false);
- assert.ok(valid.calls.some(call=>call.params?.event?.value==='mock.profile_access_updated'));
+ assert.ok(valid.calls.some(call=>call.params?.event?.value==='profile.access_updated'));
 });
 
 test('mock access rejects duplicate entries, cross-system roles and malformed signatures',async()=>{
  const entry={systemId,systemRoleId:roleId};
  for(const changes of [{access:[entry,entry]},{access:[{...entry,systemRoleId:otherId}]},{access:[{systemId}]},{signatureBase64:Buffer.from('not a PNG').toString('base64')}]){
-  const {app,calls,body}=setup();const response=await request(app).patch('/profile').send({...body,...changes});
+  const {app,calls,body}=setup({role:'IT'});const response=await request(app).patch('/profile').send({...body,...changes});
   assert.equal(response.status,400);assert.equal(calls.some(call=>/^(INSERT|UPDATE)/.test(call.sql)),false);
  }
 });
 
-test('profile read exposes own access and reflects server mock-edit policy',async()=>{
- for(const demo of [true,false]){
-  const {app}=setup({demo,existing:[{Id:otherId,SystemId:systemId,SystemRoleId:roleId}]});const response=await request(app).get('/profile');
-  assert.equal(response.status,200);assert.equal(response.body.user.id,actorId);assert.equal(response.body.access.length,1);assert.equal(response.body.canEditAccess,demo);
+test('profile read exposes own access and restricts direct editing by role',async()=>{
+ for(const role of ['User','Branch manager','Department head','CITO','IT','Admin','Super Admin']){
+  const {app}=setup({role,existing:[{Id:otherId,SystemId:systemId,SystemRoleId:roleId}]});const response=await request(app).get('/profile');
+  assert.equal(response.status,200);assert.equal(response.body.user.id,actorId);assert.equal(response.body.access.length,1);assert.equal(response.body.canEditAccess,['IT','Admin','Super Admin'].includes(role));
  }
 });

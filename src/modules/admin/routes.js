@@ -4,21 +4,13 @@ import {z,id,text,parse,uuidParam} from '../../core/validation.js';
 import {roles,recentAuth} from '../auth/service.js';
 import {requireCondition} from '../../core/errors.js';
 import {audit} from '../audit/service.js';
-import {workflowRoles} from '../requests/policy.js';
+import {saveWorkflow,workflowUpdate} from './workflows.js';
 export function adminRoutes(db,config){
- const router=Router();router.use(roles('Super Admin'),recentAuth);
+ const router=Router();router.use(roles('Admin','Super Admin'),recentAuth);
  router.put('/workflows/:code',async(req,res)=>{
   const code=parse(z.string().regex(/^[a-z-]{1,50}$/),req.params.code);
-  const body=parse(z.object({roles:z.array(z.enum(['Manager','HR','IT','CITO','COO'])).min(1).max(5)}).strict(),req.body);
-  requireCondition(code==='reset'?JSON.stringify(body.roles)===JSON.stringify(workflowRoles('reset')):body.roles[0]==='Manager'&&body.roles.slice(-3).join(',')==='IT,CITO,COO'&&new Set(body.roles).size===body.roles.length,400,'INVALID_WORKFLOW','Reset/unlock requires CITO only. Other workflows require Manager, optional HR, IT, CITO, COO.');
-  await db.transaction(async query=>{
-   const row=(await query('SELECT * FROM dbo.RequestTypes WITH(UPDLOCK,HOLDLOCK) WHERE Code=@code',{code:p.str(code,50)})).recordset[0];requireCondition(row,404,'TYPE_NOT_FOUND');
-   requireCondition(!['new-user','movement','branch-transfer','employee-deactivate'].includes(code)||body.roles.includes('HR'),400,'HR_STAGE_REQUIRED');
-   const previous=(await query('SELECT Role FROM dbo.WorkflowSteps WHERE TypeCode=@code ORDER BY Position',{code:p.str(code,50)})).recordset;
-   await query('DELETE dbo.WorkflowSteps WHERE TypeCode=@code',{code:p.str(code,50)});
-   for(const [index,role] of body.roles.entries())await query('INSERT dbo.WorkflowSteps(TypeCode,Position,Role) VALUES(@code,@position,@role)',{code:p.str(code,50),position:p.int(index+1),role:p.text(role,40)});
-   await query('UPDATE dbo.RequestTypes SET IncludesHr=@hr WHERE Code=@code',{hr:p.bit(body.roles.includes('HR')),code:p.str(code,50)});await audit(query,req,'workflow.updated',code,{previous:previous.map(row=>row.Role),roles:body.roles});
-  });res.status(204).end();
+  const body=parse(workflowUpdate,req.body);
+  res.json(await saveWorkflow(db,req,code,body));
  });
  router.post('/mailing-groups',async(req,res)=>{
   const body=parse(z.object({name:text(160),email:z.email().max(254)}).strict(),req.body);

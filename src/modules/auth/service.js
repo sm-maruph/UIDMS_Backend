@@ -8,14 +8,17 @@ import {createLdapDirectory} from './ldap-directory.js';
 import {providerEnabled} from './providers.js';
 import {resolveAdProfile} from './ad-profile.js';
 import {beginDirectoryEnrollment,createDirectoryOnboarding} from './directory-onboarding.js';
+import {hydrateAuthority,hasRole} from './authorization.js';
 import {mfaPausedForTesting,mfaRequiredForUser} from './mfa-policy.js';
 
-export const publicUser=user=>({id:user.Id,employeeId:user.EmployeeId,name:user.Name,email:user.Email,role:user.Role,branchId:user.BranchId,departmentId:user.DepartmentId,designationId:user.DesignationId,active:user.Active,isDemo:Boolean(user.IsDemo),version:user.Version?.toString('hex')});
-export const userColumns='u.Id,u.EmployeeId,u.Name,u.Email,u.Role,u.BranchId,u.DepartmentId,u.DesignationId,u.Active,u.IsDemo,u.Version';
+export const publicUser=raw=>{const user=hydrateAuthority(raw);return {id:user.Id,employeeId:user.EmployeeId,name:user.Name,email:user.Email,role:user.Role,baseRole:user.BaseRole,roles:user.EffectiveRoles,managedScopes:user.ManagedScopes,branchId:user.BranchId,departmentId:user.DepartmentId,designationId:user.DesignationId,active:user.Active,isDemo:Boolean(user.IsDemo),canApproveRequests:Boolean(user.CanApproveRequests),canManageActing:Boolean(user.OwnedScopes||['IT','CITO'].includes(user.BaseRole)||hasRole(user,'IT','CITO','Admin','Super Admin')),version:user.Version?.toString('hex')};};
+export const userColumns="u.Id,u.EmployeeId,u.Name,u.Email,u.Role,u.BranchId,u.DepartmentId,u.DesignationId,u.Active,u.IsDemo,u.Version,CAST(CASE WHEN EXISTS(SELECT 1 FROM dbo.uidms_ManagedScopes(u.Id)) THEN 1 ELSE 0 END AS bit) AS CanApproveRequests,(SELECT COUNT(*) FROM dbo.OrganizationApprovers oa WHERE oa.UserId=u.Id) AS OwnedScopes,(SELECT Role FROM dbo.uidms_EffectiveRoles(u.Id) FOR JSON PATH) AS EffectiveRolesJson,(SELECT ScopeId,Role,Acting FROM dbo.uidms_ManagedScopes(u.Id) FOR JSON PATH) AS ManagedScopesJson";
 export function createAuth(db,config,{directory=createLdapDirectory(config)}={}){
  const cookieName=config.COOKIE_SECURE?'__Host-uidms':'uidms_dev';
  const cookieOptions={httpOnly:true,secure:config.COOKIE_SECURE,sameSite:'strict',path:'/',maxAge:config.SESSION_MAX_HOURS*3600000};
  async function createSession(query,req,user,provider='local'){
+  if(user.EffectiveRolesJson===undefined)user=(await query(`SELECT ${userColumns} FROM dbo.Users u WHERE u.Id=@id`,{id:p.id(user.Id)})).recordset[0]||user;
+  user=hydrateAuthority(user);
   const raw=token(),csrf=token();
   await query('UPDATE dbo.Sessions SET RevokedAt=SYSUTCDATETIME() WHERE UserId=@user AND RevokedAt IS NULL',{user:p.id(user.Id)});
   await query('INSERT dbo.Sessions(TokenHash,UserId,CsrfHash,ExpiresAt,Ip,UserAgent,AuthProvider) VALUES(@token,@user,@csrf,DATEADD(hour,@hours,SYSUTCDATETIME()),@ip,@agent,@provider)',{token:p.str(digest(raw),64),user:p.id(user.Id),csrf:p.str(digest(csrf),64),hours:p.int(config.SESSION_MAX_HOURS),ip:p.str(req.ip,64),agent:p.text(String(req.get('user-agent')||'').slice(0,300),300),provider:p.str(provider,10)});
@@ -29,7 +32,7 @@ export function createAuth(db,config,{directory=createLdapDirectory(config)}={})
   const hash=digest(raw);
   const result=await db.query(`UPDATE dbo.Sessions SET LastSeenAt=SYSUTCDATETIME() OUTPUT inserted.TokenHash WHERE TokenHash=@hash AND RevokedAt IS NULL AND ExpiresAt>SYSUTCDATETIME() AND LastSeenAt>DATEADD(minute,-@idle,SYSUTCDATETIME()); SELECT ${userColumns},s.CsrfHash,s.AuthProvider,s.CreatedAt AS AuthenticatedAt FROM dbo.Sessions s JOIN dbo.Users u ON u.Id=s.UserId WHERE s.TokenHash=@hash AND u.Active=1 AND s.RevokedAt IS NULL AND s.ExpiresAt>SYSUTCDATETIME() AND s.LastSeenAt>DATEADD(minute,-@idle,SYSUTCDATETIME())`,{hash:p.str(hash,64),idle:p.int(config.SESSION_IDLE_MINUTES)});
   requireCondition(result.recordsets[0]?.length&&result.recordsets[1]?.length,401,'SESSION_EXPIRED');
-  req.user=result.recordsets[1][0];req.sessionHash=hash;
+  req.user=hydrateAuthority(result.recordsets[1][0]);req.sessionHash=hash;
   requireCondition(providerEnabled(config,req.user.AuthProvider||'local'),401,'AUTH_PROVIDER_DISABLED');
   requireCondition(!req.user.IsDemo||mockLoginAllowed(config,req,req.user),401,'DEMO_LOGIN_DISABLED');
   if(!['GET','HEAD','OPTIONS'].includes(req.method))requireCondition(equal(digest(String(req.get('x-csrf-token')||'')),req.user.CsrfHash),403,'CSRF_INVALID');
@@ -148,5 +151,5 @@ export function createAuth(db,config,{directory=createLdapDirectory(config)}={})
  const finishOnboarding=(query,req,user)=>mfaPausedForTesting(config)?createSession(query,req,user,'ad'):challenge(query,user,'ad');
  return {authenticate,login,enroll,verifyMfa,activate,cookieName,cookieOptions,sendSession,...createDirectoryOnboarding(db,config,finishOnboarding,sendSession)};
 }
-export const roles=(...allowed)=>(req,res,next)=>{requireCondition(allowed.includes(req.user.Role),403,'FORBIDDEN');next();};
+export const roles=(...allowed)=>(req,res,next)=>{requireCondition(hasRole(req.user,...allowed),403,'FORBIDDEN');next();};
 export function recentAuth(req,res,next){requireCondition(Date.now()-new Date(req.user.AuthenticatedAt).getTime()<10*60*1000,403,'REAUTHENTICATION_REQUIRED','Sign in again before this sensitive action.');next();}

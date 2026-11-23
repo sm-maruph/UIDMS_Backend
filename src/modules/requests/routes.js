@@ -6,6 +6,7 @@ import {createTicket,listTickets,decide,replaceTicket} from './service.js';
 import {createRequest,listRequests,editRequest,decision,version} from './schemas.js';
 import {loadTicket,details,currentStep} from './repository.js';
 import {assertVersion,assertReview,validateJustification} from './policy.js';
+import {hasRole} from '../auth/authorization.js';
 import {audit} from '../audit/service.js';
 import {raiseQuery} from '../queries/routes.js';
 
@@ -43,7 +44,7 @@ export function requestRoutes(db){
  router.put('/:id/hr-clearance',async(req,res)=>{
   const requestId=uuidParam(req),body=parse(z.object({version,checks:z.array(z.object({personId:id,police:z.enum(['Completed','Pending','Special recommendation']),reference:z.enum(['Both checked','One checked','Pending']),recommendation:text(2000,0).optional()}).strict().refine(check=>check.police!=='Special recommendation'||check.recommendation?.length,'Recommendation required')).min(1).max(100)}).strict(),req.body);
   await db.transaction(async query=>{
-   const ticket=await loadTicket(query,requestId,req.user,{lock:true});assertVersion(ticket,body.version);assertReview(ticket,await currentStep(query,ticket),req.user);requireCondition(req.user.Role==='HR'&&ticket.TypeCode==='new-user',403,'HR_ONLY');
+   const ticket=await loadTicket(query,requestId,req.user,{lock:true});assertVersion(ticket,body.version);assertReview(ticket,await currentStep(query,ticket),req.user);requireCondition(hasRole(req.user,'HR')&&ticket.TypeCode==='new-user',403,'HR_ONLY');
    const people=(await query('SELECT Id FROM dbo.RequestPeople WHERE RequestId=@id',{id:p.id(requestId)})).recordset;
    requireCondition(body.checks.length===people.length&&new Set(body.checks.map(check=>check.personId)).size===people.length&&body.checks.every(check=>people.some(person=>person.Id===check.personId)),400,'HR_PEOPLE_MISMATCH');
    for(const check of body.checks)await query('UPDATE dbo.HrClearances SET ActorId=@actor,Police=@police,ReferenceCheck=@reference,Recommendation=@recommendation,UpdatedAt=SYSUTCDATETIME() WHERE PersonId=@person; IF @@ROWCOUNT=0 INSERT dbo.HrClearances(PersonId,ActorId,Police,ReferenceCheck,Recommendation) VALUES(@person,@actor,@police,@reference,@recommendation)',{actor:p.id(req.user.Id),police:p.str(check.police,30),reference:p.str(check.reference,20),recommendation:p.text(check.recommendation,2000),person:p.id(check.personId)});

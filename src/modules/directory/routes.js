@@ -11,11 +11,12 @@ import {version} from '../requests/schemas.js';
 import {workflowRoles} from '../requests/policy.js';
 import {profileRoutes} from './profile.js';
 import {localLoginEnabled} from '../auth/providers.js';
+import {hasRole,isAdministrator,canManageAccount} from '../auth/authorization.js';
 import {optionalEmailSchema} from '../auth/directory-onboarding.js';
 
-const roleSchema=z.enum(['User','Branch manager','Department head','IT','CITO','COO','HR','Platform Admin','Super Admin']);
+const roleSchema=z.enum(['User','Branch manager','Department head','IT','CITO','COO','HR','Admin','Platform Admin','Super Admin']);
 const profileSchema=z.object({employeeId:text(40).regex(/^[A-Za-z0-9_-]+$/),name:text(160),email:optionalEmailSchema,role:roleSchema,branchId:id,departmentId:id,designationId:id.nullable().optional()}).strict();
-const isAdmin=user=>['Platform Admin','Super Admin'].includes(user.Role);
+const isAdmin=isAdministrator;
 export function directoryRoutes(db,config){
  const router=Router();
  router.use(profileRoutes(db,config));
@@ -36,22 +37,23 @@ export function directoryRoutes(db,config){
  });
  router.get('/users',async(req,res)=>{
   const filter=parse(pageSchema.extend({search:text(100,0).default('')}).strict(),req.query);
-  const scope=`(u.Id=@actor OR @role IN ('IT','HR','CITO','COO','Platform Admin','Super Admin') OR (@role='Branch manager' AND u.BranchId=@branch) OR (@role='Department head' AND u.DepartmentId=@department)) AND (@search=N'' OR CHARINDEX(@search,u.Name)>0 OR CHARINDEX(@search,u.EmployeeId)>0)`;
+  const scope=`(u.Id=@actor OR @role IN ('IT','HR','CITO','COO','Admin','Platform Admin','Super Admin') OR EXISTS(SELECT 1 FROM dbo.uidms_ManagedScopes(@actor) ms JOIN dbo.Lookups ml ON ml.Id=ms.ScopeId WHERE (ml.Kind='branch' AND u.BranchId=ms.ScopeId) OR (ml.Kind='department' AND u.DepartmentId=ms.ScopeId))) AND (@search=N'' OR CHARINDEX(@search,u.Name)>0 OR CHARINDEX(@search,u.EmployeeId)>0)`;
   const result=await db.query(`SELECT COUNT(*) AS Total FROM dbo.Users u WHERE ${scope}; SELECT ${userColumns},b.Name AS Branch,d.Name AS Department FROM dbo.Users u LEFT JOIN dbo.Lookups b ON b.Id=u.BranchId LEFT JOIN dbo.Lookups d ON d.Id=u.DepartmentId WHERE ${scope} ORDER BY u.Name,u.Id OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY`,{actor:p.id(req.user.Id),role:p.text(req.user.Role,40),branch:p.id(req.user.BranchId),department:p.id(req.user.DepartmentId),search:p.text(filter.search,100),offset:p.int((filter.page-1)*filter.pageSize),size:p.int(filter.pageSize)});
   res.json({items:result.recordsets[1].map(row=>({...publicUser(row),branch:row.Branch,department:row.Department})),total:result.recordsets[0][0].Total,page:filter.page,pageSize:filter.pageSize});
  });
  router.get('/users/:id/access',async(req,res)=>{
   const userId=uuidParam(req);
   const user=(await db.query(`SELECT ${userColumns} FROM dbo.Users u WHERE u.Id=@id`,{id:p.id(userId)})).recordset[0];
-  requireCondition(user&&(user.Id===req.user.Id||isAdmin(req.user)||['IT','HR','CITO','COO'].includes(req.user.Role)||(req.user.Role==='Branch manager'&&user.BranchId===req.user.BranchId)||(req.user.Role==='Department head'&&user.DepartmentId===req.user.DepartmentId)),404,'USER_NOT_FOUND');
+  const scoped=user&&(await db.query("SELECT ScopeId FROM dbo.uidms_ManagedScopes(@actor) ms JOIN dbo.Lookups l ON l.Id=ms.ScopeId WHERE (l.Kind='branch' AND ms.ScopeId=@branch) OR (l.Kind='department' AND ms.ScopeId=@department)",{actor:p.id(req.user.Id),branch:p.id(user.BranchId),department:p.id(user.DepartmentId)})).recordset.length>0;
+  requireCondition(user&&(scoped||user.Id===req.user.Id||isAdmin(req.user)||hasRole(req.user,'IT','HR','CITO','COO')),404,'USER_NOT_FOUND');
   const result=await db.query('SELECT g.Id,g.SystemId,s.Name AS SystemName,g.SystemRoleId,sr.Name AS RoleName,g.Username,g.GrantedAt,g.SourceRequestId FROM dbo.AccessGrants g JOIN dbo.Systems s ON s.Id=g.SystemId LEFT JOIN dbo.SystemRoles sr ON sr.Id=g.SystemRoleId WHERE g.UserId=@id AND g.RevokedAt IS NULL ORDER BY s.Name,sr.Name',{id:p.id(userId)});
   res.json({user:publicUser(user),access:result.recordset});
  });
  async function validateLookups(query,body){
   for(const [value,kind] of [[body.branchId,'branch'],[body.departmentId,'department'],[body.designationId,'designation']])if(value){const found=await query('SELECT Id FROM dbo.Lookups WHERE Id=@id AND Kind=@kind AND Active=1',{id:p.id(value),kind:p.str(kind,20)});requireCondition(found.recordset.length,400,'INVALID_LOOKUP');}
  }
- router.post('/users',roles('Platform Admin','Super Admin'),recentAuth,async(req,res)=>{
-  const body=parse(profileSchema.extend({mock:z.boolean().default(false)}),req.body);requireCondition(body.role!=='Super Admin'||req.user.Role==='Super Admin',403,'SUPER_ADMIN_REQUIRED');
+ router.post('/users',roles('Admin','Super Admin'),recentAuth,async(req,res)=>{
+  const body=parse(profileSchema.extend({mock:z.boolean().default(false)}),req.body);requireCondition(canManageAccount(req.user,null,body.role),403,'ADMIN_ROLE_PROTECTED','Only Super Admin can create an administrator.');
   if(body.mock)requireCondition(localMockRequest(config,req),403,'MOCK_LOGIN_DISABLED');
   const password=body.mock?await hashPassword('1234'):null;
   const activationToken=token();
@@ -62,38 +64,40 @@ export function directoryRoutes(db,config){
    await audit(query,req,body.mock?'mock.user_created':'user.created',created.Id,{role:body.role});return created;
   });res.status(201).json(body.mock?{id:result.Id,mock:true}:localLoginEnabled(config)?{id:result.Id,activationToken,expiresInHours:24}:{id:result.Id,authentication:'ad'});
  });
- router.patch('/users/:id',roles('Platform Admin','Super Admin'),recentAuth,async(req,res)=>{
+ router.patch('/users/:id',roles('Admin','Super Admin'),recentAuth,async(req,res)=>{
   const userId=uuidParam(req),body=parse(profileSchema.omit({employeeId:true}).extend({active:z.boolean(),version}).strict(),req.body);
   requireCondition(userId!==req.user.Id,403,'SELF_ADMINISTRATION_FORBIDDEN');
   await db.transaction(async query=>{
-   const user=(await query('SELECT Id,Role,Version FROM dbo.Users WITH(UPDLOCK,HOLDLOCK) WHERE Id=@id',{id:p.id(userId)})).recordset[0];requireCondition(user,404,'USER_NOT_FOUND');requireCondition(user.Version.toString('hex')===body.version,409,'STALE_VERSION');
-   requireCondition((user.Role!=='Super Admin'&&body.role!=='Super Admin')||req.user.Role==='Super Admin',403,'SUPER_ADMIN_REQUIRED');
+   const user=(await query('SELECT Id,Role,Version,Active FROM dbo.Users WITH(UPDLOCK,HOLDLOCK) WHERE Id=@id',{id:p.id(userId)})).recordset[0];requireCondition(user,404,'USER_NOT_FOUND');requireCondition(user.Version.toString('hex')===body.version,409,'STALE_VERSION');
+   requireCondition(canManageAccount(req.user,user.Role,body.role),403,'ADMIN_ROLE_PROTECTED','Only Super Admin can create or promote administrator accounts.');
+   requireCondition(hasRole(req.user,'Super Admin')||user.Active!==false||!body.active||!['Admin','Platform Admin','Super Admin'].includes(body.role),403,'ADMIN_ROLE_PROTECTED','Only Super Admin can reactivate an administrator account.');
    if(user.Role==='Super Admin'&&(!body.active||body.role!=='Super Admin'))requireCondition((await query("SELECT COUNT(*) AS Total FROM dbo.Users WITH(UPDLOCK,HOLDLOCK) WHERE Role='Super Admin' AND Active=1")).recordset[0].Total>1,409,'LAST_SUPER_ADMIN');
+   if(user.Role!==body.role||!body.active)await query('UPDATE dbo.RoleDelegations SET RevokedAt=SYSUTCDATETIME(),RevokedBy=@actor WHERE (PrincipalId=@id OR ActingUserId=@id) AND RevokedAt IS NULL',{id:p.id(userId),actor:p.id(req.user.Id)});
    await validateLookups(query,body);
    await query('UPDATE dbo.Users SET Name=@name,Email=@email,Role=@role,BranchId=@branch,DepartmentId=@department,DesignationId=@designation,Active=@active,UpdatedAt=SYSUTCDATETIME() WHERE Id=@id; UPDATE dbo.Sessions SET RevokedAt=SYSUTCDATETIME() WHERE UserId=@id',{id:p.id(userId),name:p.text(body.name,160),email:p.text(body.email,254),role:p.text(body.role,40),branch:p.id(body.branchId),department:p.id(body.departmentId),designation:p.id(body.designationId),active:p.bit(body.active)});await audit(query,req,'user.updated',userId,{previousRole:user.Role,role:body.role,active:body.active});
   });res.status(204).end();
  });
- router.post('/lookups',roles('Platform Admin','Super Admin'),recentAuth,async(req,res)=>{
+ router.post('/lookups',roles('Admin','Super Admin'),recentAuth,async(req,res)=>{
   const body=parse(z.object({kind:z.enum(['branch','department','designation']),name:text(150)}).strict(),req.body);
   const row=await db.transaction(async query=>{const result=await query('INSERT dbo.Lookups(Kind,Name) OUTPUT inserted.Id VALUES(@kind,@name)',{kind:p.str(body.kind,20),name:p.text(body.name,150)});await audit(query,req,'lookup.created',result.recordset[0].Id,{kind:body.kind});return result.recordset[0];});res.status(201).json(row);
  });
- router.post('/systems',roles('Platform Admin','Super Admin'),recentAuth,async(req,res)=>{
+ router.post('/systems',roles('Admin','Super Admin'),recentAuth,async(req,res)=>{
   const body=parse(z.object({name:text(150),roles:z.array(text(150)).max(100).default([])}).strict(),req.body);
   const result=await db.transaction(async query=>{const row=(await query('INSERT dbo.Systems(Name) OUTPUT inserted.Id VALUES(@name)',{name:p.text(body.name,150)})).recordset[0];for(const name of new Set(body.roles))await query('INSERT dbo.SystemRoles(SystemId,Name) VALUES(@id,@name)',{id:p.id(row.Id),name:p.text(name,150)});await audit(query,req,'system.created',row.Id);return row;});res.status(201).json(result);
  });
- router.put('/workflows/:code',roles('Super Admin'),recentAuth,async(req,res)=>{
+ router.put('/workflows/:code',roles('Admin','Super Admin'),recentAuth,async(req,res)=>{
   const code=parse(z.string().regex(/^[a-z-]{1,50}$/),req.params.code);const body=parse(z.object({steps:z.array(z.enum(['Manager','HR','IT','CITO','COO'])).min(1).max(5)}).strict(),req.body);
   await db.transaction(async query=>{const type=(await query('SELECT IncludesHr FROM dbo.RequestTypes WITH(UPDLOCK,HOLDLOCK) WHERE Code=@code',{code:p.str(code,50)})).recordset[0];requireCondition(type,404,'REQUEST_TYPE_NOT_FOUND');const required=workflowRoles(code,type.IncludesHr);requireCondition(JSON.stringify(body.steps)===JSON.stringify(required),400,'INVALID_APPROVAL_CHAIN','Reset/unlock requires CITO only; other approval chains retain their required stages.');await query('DELETE dbo.WorkflowSteps WHERE TypeCode=@code',{code:p.str(code,50)});for(const [i,role] of body.steps.entries())await query('INSERT dbo.WorkflowSteps(TypeCode,Position,Role) VALUES(@code,@position,@role)',{code:p.str(code,50),position:p.int(i+1),role:p.text(role,40)});await audit(query,req,'workflow.updated',code,{steps:body.steps});});res.status(204).end();
  });
- router.post('/mailing-groups',roles('Platform Admin','Super Admin'),recentAuth,async(req,res)=>{
+ router.post('/mailing-groups',roles('Admin','Super Admin'),recentAuth,async(req,res)=>{
   const body=parse(z.object({name:text(160),email:z.email().max(254)}).strict(),req.body);
   const row=await db.transaction(async query=>{const result=(await query('INSERT dbo.MailingGroups(Name,Email) OUTPUT inserted.Id VALUES(@name,@email)',{name:p.text(body.name,160),email:p.text(body.email.toLowerCase(),254)})).recordset[0];await audit(query,req,'mailing_group.created',result.Id);return result;});res.status(201).json(row);
  });
- router.patch('/lookups/:id',roles('Platform Admin','Super Admin'),recentAuth,async(req,res)=>{
+ router.patch('/lookups/:id',roles('Admin','Super Admin'),recentAuth,async(req,res)=>{
   const lookup=uuidParam(req),body=parse(z.object({name:text(150),active:z.boolean()}).strict(),req.body);
   await db.transaction(async query=>{const result=await query('UPDATE dbo.Lookups SET Name=@name,Active=@active OUTPUT inserted.Id WHERE Id=@id',{id:p.id(lookup),name:p.text(body.name,150),active:p.bit(body.active)});requireCondition(result.recordset.length,404,'LOOKUP_NOT_FOUND');await audit(query,req,'lookup.updated',lookup,{active:body.active});});res.status(204).end();
  });
- router.patch('/systems/:id',roles('Platform Admin','Super Admin'),recentAuth,async(req,res)=>{
+ router.patch('/systems/:id',roles('Admin','Super Admin'),recentAuth,async(req,res)=>{
   const system=uuidParam(req),body=parse(z.object({name:text(150),active:z.boolean(),transferManaged:z.boolean()}).strict(),req.body);
   await db.transaction(async query=>{const result=await query('UPDATE dbo.Systems SET Name=@name,Active=@active,TransferManaged=@transfer OUTPUT inserted.Id WHERE Id=@id',{id:p.id(system),name:p.text(body.name,150),active:p.bit(body.active),transfer:p.bit(body.transferManaged)});requireCondition(result.recordset.length,404,'SYSTEM_NOT_FOUND');await audit(query,req,'system.updated',system,{active:body.active,transferManaged:body.transferManaged});});res.status(204).end();
  });
