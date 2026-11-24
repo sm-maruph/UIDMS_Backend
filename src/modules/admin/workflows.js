@@ -1,6 +1,6 @@
 import {p} from '../../core/db.js';
 import {z} from '../../core/validation.js';
-import {requireCondition} from '../../core/errors.js';
+import {HttpError,requireCondition} from '../../core/errors.js';
 import {audit} from '../audit/service.js';
 import {resolveManager} from '../directory/approvers.js';
 import {managerRole} from '../requests/policy.js';
@@ -29,6 +29,7 @@ async function updateOpenRequests(query,req,code){
   JOIN dbo.Users u ON u.Id=r.RequesterId
   JOIN dbo.RequestTypes rt ON rt.Code=r.TypeCode
   WHERE r.TypeCode=@code AND r.DeletedAt IS NULL AND r.Status IN ('Employee review','Pending','In review','Query') ORDER BY r.Id`,{code:p.str(code,50)})).recordset;
+ const plans=[],issues=[];
  for(const ticket of tickets){
   const params={id:p.id(ticket.Id)};
   const existing=(await query('SELECT * FROM dbo.RequestSteps WITH(UPDLOCK,HOLDLOCK) WHERE RequestId=@id ORDER BY Position',params)).recordset;
@@ -37,12 +38,30 @@ async function updateOpenRequests(query,req,code){
   const configured=await approvalPlan(query,{typeCode:code,items:items.map(item=>({systemId:item.SystemId}))});
   const pending=remainingWorkflow(existing,configured,managerRole(ticket.TargetBranch,ticket.TargetDepartment));
   const completed=existing.filter(step=>step.Status==='Approved');
+  for(const step of pending){
+   if(!['Branch manager','Department head'].includes(step.Role))continue;
+   try{step.AssignedUserId=await resolveManager(query,step.Role,ticket.DestinationBranchId||ticket.BranchId,ticket.DestinationDepartmentId||ticket.DepartmentId);}
+   catch(error){
+    if(!['APPROVER_REQUIRED','APPROVER_INACTIVE'].includes(error.code))throw error;
+    issues.push({ticketNumber:ticket.TicketNumber,scopeId:step.Role==='Branch manager'?(ticket.DestinationBranchId||ticket.BranchId):(ticket.DestinationDepartmentId||ticket.DepartmentId),scopeKind:step.Role==='Branch manager'?'branch':'department',scopeName:step.Role==='Branch manager'?ticket.TargetBranch:ticket.TargetDepartment,branch:ticket.TargetBranch,department:ticket.TargetDepartment,role:step.Role,reason:error.code});
+   }
+  }
+  plans.push({ticket,existing,pending,completed});
+ }
+ if(issues.length){
+  const scopes=new Map();
+  for(const issue of issues){const key=issue.scopeId+':'+issue.role;const group=scopes.get(key)||{...issue,tickets:[],requestCount:0};if(group.tickets.length<10)group.tickets.push(issue.ticketNumber);group.requestCount++;scopes.set(key,group);}
+  const error=new HttpError(409,'WORKFLOW_ASSIGNMENTS_INCOMPLETE',`${issues.length} ongoing request${issues.length===1?' needs':'s need'} an assigned manager or department head. Review the exact scopes below; no workflow changes were saved.`);
+  error.details={requestCount:issues.length,scopeCount:scopes.size,assignments:[...scopes.values()].slice(0,100)};throw error;
+ }
+ for(const {ticket,existing,pending,completed} of plans){
+  const params={id:p.id(ticket.Id)};
   const returnStatus=pending.length?(completed.length?'In review':'Pending'):'Approved';
   const status=['Query','Employee review'].includes(ticket.Status)?ticket.Status:returnStatus;
   await query("DELETE dbo.RequestSteps WHERE RequestId=@id AND Status='Waiting'",params);
   for(const step of pending)await query('INSERT dbo.RequestSteps(RequestId,Position,Role,BranchId,DepartmentId,AssignedUserId) VALUES(@request,@position,@role,@branch,@department,@assignee)',{
    request:p.id(ticket.Id),position:p.int(step.Position),role:p.text(step.Role,40),
-   assignee:p.id(['Branch manager','Department head'].includes(step.Role)?await resolveManager(query,step.Role,ticket.DestinationBranchId||ticket.BranchId,ticket.DestinationDepartmentId||ticket.DepartmentId):null),
+   assignee:p.id(step.AssignedUserId||null),
    branch:p.id(step.Role==='Branch manager'?(ticket.DestinationBranchId||ticket.BranchId):null),
    department:p.id(step.Role==='Department head'?(ticket.DestinationDepartmentId||ticket.DepartmentId):null),
   });

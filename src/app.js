@@ -14,6 +14,8 @@ import {requestRoutes} from './modules/requests/routes.js';
 import {queryRoutes} from './modules/queries/routes.js';
 import {fulfilmentRoutes} from './modules/fulfilment/routes.js';
 import {emailTemplateRoutes} from './modules/fulfilment/email-template-routes.js';
+import {auditRoutes} from './modules/audit/routes.js';
+import {auditFailures} from './modules/audit/middleware.js';
 import {dashboardRoutes} from './modules/dashboard/routes.js';
 import {adminRoutes} from './modules/admin/routes.js';
 import {attachmentRoutes} from './modules/attachments/routes.js';
@@ -52,9 +54,9 @@ export function createApp({db,config,directory}){
  });
  app.use('/api/auth',authRoutes(db,auth,config));
  const api=express.Router();api.use(auth.authenticate);
- api.use(directoryRoutes(db,config));api.use(approverRoutes(db));api.use(delegationRoutes(db));api.use('/requests',requestRoutes(db));api.use('/queries',queryRoutes(db));api.use(fulfilmentRoutes(db,config));api.use(emailTemplateRoutes(db));api.use(attachmentRoutes(db));api.use(dashboardRoutes(db));api.use('/admin',adminRoutes(db,config));
+ api.use(directoryRoutes(db,config));api.use(approverRoutes(db));api.use(delegationRoutes(db));api.use('/requests',requestRoutes(db));api.use('/queries',queryRoutes(db));api.use(fulfilmentRoutes(db,config));api.use(emailTemplateRoutes(db));api.use(attachmentRoutes(db));api.use(dashboardRoutes(db));api.use(auditRoutes(db,config));api.use('/admin',adminRoutes(db,config));
  app.use('/api',api);
  app.use((req,res,next)=>next(new HttpError(404,'NOT_FOUND')));
- app.use(errorHandler);
+ app.use(auditFailures(db));app.use(errorHandler);
  return app;
 }

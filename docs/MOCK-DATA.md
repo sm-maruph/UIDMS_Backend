@@ -35,7 +35,7 @@ Use the pencil beside your name in the sidebar to open **Edit profile**. You can
 
 ## Import on another development installation
 
-1. Execute SQL scripts through `015-roles-and-acting-assignments.sql` in SSMS. Current API schema version is 12; script 011 supplies mock-data support.
+1. Execute SQL scripts through `016-session-audit.sql` in SSMS. Current API schema version is 13; script 011 supplies mock-data support.
 2. In the backend `.env`, use `NODE_ENV=development`, `HOST=127.0.0.1`, a local `DB_SERVER`, and `MOCK_LOGIN_ENABLED=true`.
 3. From the backend folder, run:
 

@@ -4,6 +4,8 @@ Super Admin, Admin and IT can open **Approver assignments** at `/admin/approvers
 
 Each department has one head and each branch has one manager. The same account may cover multiple scopes. An assignment does not change the account's portal role, department, branch, AD identity or system access. Only active, registered UIDMS users may be selected. New AD employees first complete their ordinary UIDMS enrollment.
 
+Assignments use exact lookup IDs. If both `IT` and `IT Department` exist, assigning a head to `IT` does not cover requests stored against `IT Department`. Workflow save errors now identify all affected scopes and ticket numbers. Use Set assignment to open the exact scope in another tab. An unassigned department can suggest the employee assigned to an unambiguous similarly named record; Find user and Assign are still required. No department records are automatically merged and no employee is silently assigned to another scope.
+
 Assignments are used when the configured service workflow includes **Manager**. Existing routing determines whether the target organization requires a department head or branch manager. Branch/department movements use the destination scope; other services use the requested employee scope. A service configured as CITO → Processing → Completed remains on that chain until its workflow is changed to include Manager.
 
 Assigned accounts get the Approvals menu and pending badge even if their base role is User. The server checks the exact assigned account and prevents approval of the requester's or movement subject's own request. Holding a Manager assignment does not grant general user administration or workflow editing.
@@ -14,11 +16,11 @@ Saving an assignment replaces only matching Waiting manager/head steps on Employ
 
 1. Pull the updated backend and frontend on the hosted PC.
 2. In SSMS, connect to the UIDMS SQL instance using a DBA account and execute the complete `backend/sql/014-organization-approvers.sql`. Migration 013 must already be installed. Script 014 is transactional and can be rerun safely. It adds mapping/assignee fields and seeds only unique existing active manager/head accounts. It preserves user roles and completed approvals.
-3. Also run migration 015 for acting roles and Admin. Confirm `SELECT MAX(Version) FROM CBC_UIDMS.dbo.SchemaVersions;` returns **12**. Script 004 and the runtime login password do not need to be changed.
+3. Also run migration 015 for acting roles and Admin. Confirm `SELECT MAX(Version) FROM CBC_UIDMS.dbo.SchemaVersions;` returns **13** after migration 016. Script 004 and the runtime login password do not need to be changed.
 4. Rebuild the frontend with `npm run build` from its directory and restart only the UIDMS API process, for example `pm2 restart uidms-api` from the backend directory. Keep IIS pointing to the updated frontend `dist` directory.
 5. Sign in as Super Admin or IT, open Approver assignments, and review all relevant departments/branches. Use Workflow studio as Super Admin to include Manager in the services that require it.
 
-The running API fails at startup with an explicit migration instruction until schema version 12 is installed. The API does not perform database migrations automatically. Applying scripts to a development database does not update a different hosted database.
+The running API fails at startup with an explicit migration instruction until the current schema version 13 (migration 016) is installed. The API does not perform database migrations automatically. Applying scripts to a development database does not update a different hosted database.
 
 ## API
 

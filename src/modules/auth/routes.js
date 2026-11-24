@@ -3,6 +3,7 @@ import {z,text,parse} from '../../core/validation.js';
 import {p} from '../../core/db.js';
 import {token,digest,hashPassword,verifyPassword} from '../../core/crypto.js';
 import {requireCondition} from '../../core/errors.js';
+import {closeAuditSessions} from '../audit/sessions.js';
 import {audit} from '../audit/service.js';
 import {publicUser} from './service.js';
 import {localMockRequest} from './mock-policy.js';
@@ -37,13 +38,13 @@ export function authRoutes(db,auth,config){
   const csrf=token();await db.query('UPDATE dbo.Sessions SET CsrfHash=@csrf WHERE TokenHash=@hash',{csrf:p.str(digest(csrf),64),hash:p.str(req.sessionHash,64)});
   res.json({user:publicUser(req.user),csrfToken:csrf,provider:req.user.AuthProvider||'local'});
  });
- router.post('/logout',async(req,res)=>{await db.transaction(async query=>{await query('UPDATE dbo.Sessions SET RevokedAt=SYSUTCDATETIME() WHERE TokenHash=@hash',{hash:p.str(req.sessionHash,64)});await audit(query,req,'auth.logout',req.user.Id);});res.clearCookie(auth.cookieName,{...auth.cookieOptions,maxAge:undefined});res.status(204).end();});
+ router.post('/logout',async(req,res)=>{await db.transaction(async query=>{await closeAuditSessions(query,{sessionId:req.auditSessionId,reason:'logout',recordEvent:false});await query('UPDATE dbo.Sessions SET RevokedAt=SYSUTCDATETIME() WHERE TokenHash=@hash',{hash:p.str(req.sessionHash,64)});await audit(query,req,'auth.logout',req.user.Id);});res.clearCookie(auth.cookieName,{...auth.cookieOptions,maxAge:undefined});res.status(204).end();});
  router.post('/password',validate(z.object({currentPassword:z.string().max(128),newPassword:passwordSchema}).strict()),async(req,res)=>{
   requireCondition(localLoginEnabled(config),403,'LOCAL_LOGIN_DISABLED','UIDMS uses Active Directory. Change your password through your organization’s AD password service.');
   const user=(await db.query('SELECT PasswordHash FROM dbo.Users WHERE Id=@id',{id:p.id(req.user.Id)})).recordset[0];
   requireCondition(await verifyPassword(req.body.currentPassword,user.PasswordHash),401,'INVALID_CREDENTIALS');
   const hash=await hashPassword(req.body.newPassword);
-  await db.transaction(async query=>{await query('UPDATE dbo.Users SET PasswordHash=@hash,UpdatedAt=SYSUTCDATETIME() WHERE Id=@id AND PasswordHash=@old; UPDATE dbo.Sessions SET RevokedAt=SYSUTCDATETIME() WHERE UserId=@id',{hash:p.str(hash,300),old:p.str(user.PasswordHash,300),id:p.id(req.user.Id)});await audit(query,req,'auth.password_changed',req.user.Id);});
+  await db.transaction(async query=>{await closeAuditSessions(query,{userId:req.user.Id,reason:'password_changed'});await query('UPDATE dbo.Users SET PasswordHash=@hash,UpdatedAt=SYSUTCDATETIME() WHERE Id=@id AND PasswordHash=@old; UPDATE dbo.Sessions SET RevokedAt=SYSUTCDATETIME() WHERE UserId=@id',{hash:p.str(hash,300),old:p.str(user.PasswordHash,300),id:p.id(req.user.Id)});await audit(query,req,'auth.password_changed',req.user.Id);});
   res.clearCookie(auth.cookieName,{...auth.cookieOptions,maxAge:undefined});res.status(204).end();
  });
  return router;

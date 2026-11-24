@@ -49,6 +49,7 @@ Open each file from this backend's `sql` folder in SSMS. Review it, then execute
 | 13 | [013-ad-self-enrollment.sql](sql/013-ad-self-enrollment.sql) | Verified AD employee enrollment, optional unique email, temporary hashed proofs; schema version 10. |
 | 14 | [014-organization-approvers.sql](sql/014-organization-approvers.sql) | Department/branch assignments by system ID and exact pending-step assignees; schema version 11. |
 | 15 | [015-roles-and-acting-assignments.sql](sql/015-roles-and-acting-assignments.sql) | Admin, timed acting appointments and live scoped/role authorization; schema version 12. |
+| 16 | [016-session-audit.sql](sql/016-session-audit.sql) | Durable session timelines, actor snapshots and IP tracking; schema version 13. |
 
 The scripts use database name `CBC_UIDMS`. If you change that name, update the database references in the SQL scripts and set `DB_NAME` in your environment.
 
@@ -94,7 +95,7 @@ Check the connection and privilege boundary:
 npm.cmd run db:check
 ```
 
-Expected database `CBC_UIDMS`, schema version `12` after script 015, nonzero systems and request types, `IsDbOwner=0`, `IsSysadmin=0`, and no update or delete permission on audit events.
+Expected database `CBC_UIDMS`, schema version `13` after script 016, nonzero systems and request types, `IsDbOwner=0`, `IsSysadmin=0`, and no update or delete permission on audit events.
 
 The current deployment uses AD-only sign-in. After directory verification, the returned employee ID matches an existing SQL user and retains that user's role/access. Local passwords and mock login have been retired without deleting business records. Follow the [AD-only setup guide](docs/AD-SETUP.md).
 
@@ -187,10 +188,10 @@ backend/
       requests/         Submission, editing, approvals, movement and HR clearance
       queries/          Queries and recipient-authorized responses
       fulfilment/       Processing, approved access grants, encrypted deliveries
-      dashboard/        Counts, notifications and audit browsing
+      dashboard/        Counts and notifications
       admin/            Workflow and mailing-group administration
       attachments/      Quarantine and authorized downloads
-      audit/            Transactional audit and notification helpers
+      audit/            Session timelines, transactional audit and notifications
   scripts/              Bootstrap, verification, cleanup, email and scan workers
   test/                 Security/policy tests and opt-in SQL lifecycle test
   docs/                 API, data model, deployment and testing guidance
@@ -226,3 +227,9 @@ The PM2 configuration does not replace the production TLS, secure-cookie, AD tra
 ## Production and VAPT
 
 The implementation includes controls intended to support an OWASP ASVS review. It is **not a VAPT certificate or a guarantee of passing**. Review [SECURITY.md](docs/SECURITY.md) before deployment. Run the SQL lifecycle test against a separate test database and perform independent testing of the deployed frontend, API, SQL permissions, network and reverse proxy before putting real employee data into it.
+
+## Audit session timelines
+
+Apply [016-session-audit.sql](sql/016-session-audit.sql) to the hosting database in SSMS before restarting the updated API. Migration 015 must already be installed. No runtime login password change or rerun of script 004 is needed. Confirm `SELECT MAX(Version) FROM CBC_UIDMS.dbo.SchemaVersions;` returns **13**. Rebuild the frontend in the IIS physical-path project, restart `uidms-api`, then sign out and back in to begin a fully tracked session. The migration has been applied only to the local development database by this change.
+
+Audit trail is available to Admin and Super Admin. **View** opens a timestamped session timeline with sign-in/end, IPs, page navigation, recorded business actions and failed authenticated actions. Active, signed-out, expired, replaced and revoked sessions are distinguished. All displayed timestamps use Asia/Dhaka. Older rows without session identifiers are grouped only where recorded sign-in boundaries exist and labelled as historical; missing information is not reconstructed as fact. [Audit API details](docs/API.md#audit-session-details) describe pagination and retention.

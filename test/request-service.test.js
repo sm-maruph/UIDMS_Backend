@@ -92,3 +92,14 @@ test('drive request types cannot select systems from the other drive request',as
   else await assert.rejects(validateCreation(query,value,user),error=>error.code==='INVALID_DRIVE_SELECTION');
  }
 });
+
+test('server distinguishes recommendations from final approval using saved next steps and records default or custom remarks',async()=>{
+ for(const [Role,nextPosition,remark,expectedRemark] of [['CITO',2,undefined,'Recommended'],['CITO',2,'  ','Recommended'],['CITO',null,undefined,'Approved'],['COO',null,undefined,'Approved'],['COO',2,undefined,'Recommended'],['IT',2,'  Needed for branch operations.  ','Needed for branch operations.']]){
+  const calls=[],ticket={Id:requestId,RequesterId:otherId,TicketNumber:'UID-FIXTURE',Status:'In review',TypeCode:'reset',CurrentPosition:1,Version:Buffer.from('0000000000000001','hex')};
+  const query=async(text,params)=>{calls.push({text,params});if(text.startsWith('SELECT r.*'))return {recordset:[ticket]};if(text.startsWith('SELECT * FROM dbo.RequestSteps'))return {recordset:[{Role,Status:'Waiting'}]};if(text.startsWith('SELECT TOP(1) Position'))return {recordset:nextPosition?[{Position:nextPosition}]:[]};return {recordset:[]};};
+  const result=await decide({transaction:work=>work(query)},{user:{...user,Role},ip:'192.0.2.1',id:randomUUID()},requestId,{version:'0000000000000001',decision:'approve',remark});
+  assert.equal(result.status,nextPosition?'In review':'Approved');assert.equal(result.decisionLabel,nextPosition?'Recommended':'Approved');
+  assert.equal(calls.find(call=>call.text.startsWith('UPDATE dbo.RequestSteps SET')).params.remark.value,expectedRemark);
+  const metadata=JSON.parse(calls.find(call=>call.params?.event?.value==='request.approve').params.metadata.value);assert.equal(metadata.decisionLabel,result.decisionLabel);assert.equal(metadata.role,Role);
+ }
+});

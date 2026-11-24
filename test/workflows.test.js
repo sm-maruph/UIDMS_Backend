@@ -85,3 +85,15 @@ test('new-user credential custody stays with the manager when manager approval i
  }
  await assert.rejects(newUserCustodian(async sql=>({recordset:sql.startsWith('SELECT TOP')?[]:sql.startsWith('SELECT b.Name')?[{Branch:'Main',Department:'Operations'}]:sql.startsWith('SELECT a.UserId')?[]:[{Id:actorId},{Id:otherId}]}),ticket),error=>error.code==='APPROVER_REQUIRED');
 });
+
+test('workflow save identifies every blocking scope and validates all assignments before replacing pending steps',async()=>{
+ const f=fixture({tickets:[
+  {Id:requestId,TicketNumber:'UID-1',Status:'Pending',TargetBranch:'Corporate Office',TargetDepartment:'IT Department',BranchId:branchId,DepartmentId:departmentId},
+  {Id:otherId,TicketNumber:'UID-2',Status:'Pending',TargetBranch:'Unassigned Branch',TargetDepartment:'Operations',BranchId:actorId,DepartmentId:departmentId},
+ ],steps:[{Position:1,Role:'CITO',Status:'Waiting'}]});
+ const response=await request(f.app).put('/workflows/reset').send({roles:['Manager','CITO'],applyToOpenRequests:true});
+ assert.equal(response.status,409);assert.equal(response.body.error.code,'WORKFLOW_ASSIGNMENTS_INCOMPLETE');assert.equal(response.body.error.details.requestCount,2);assert.equal(response.body.error.details.assignments.length,2);
+ assert.equal(response.body.error.details.assignments[0].scopeName,'IT Department');assert.equal(response.body.error.details.assignments[0].role,'Department head');assert.deepEqual(response.body.error.details.assignments[0].tickets,['UID-1']);
+ assert.equal(response.body.error.details.assignments[1].scopeName,'Unassigned Branch');
+ assert.equal(f.calls.some(call=>call.sql.startsWith('DELETE dbo.RequestSteps')||call.sql.startsWith('UPDATE dbo.Requests')),false);
+});

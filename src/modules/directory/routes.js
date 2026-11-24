@@ -5,6 +5,7 @@ import {requireCondition} from '../../core/errors.js';
 import {token,digest,hashPassword} from '../../core/crypto.js';
 import {localMockRequest} from '../auth/mock-policy.js';
 import {roles,recentAuth,publicUser,userColumns} from '../auth/service.js';
+import {closeAuditSessions} from '../audit/sessions.js';
 import {audit} from '../audit/service.js';
 import {validFile} from '../attachments/routes.js';
 import {version} from '../requests/schemas.js';
@@ -13,6 +14,7 @@ import {profileRoutes} from './profile.js';
 import {localLoginEnabled} from '../auth/providers.js';
 import {hasRole,isAdministrator,canManageAccount} from '../auth/authorization.js';
 import {optionalEmailSchema} from '../auth/directory-onboarding.js';
+import {portalRequestTypes,isCurrentRequestType} from '../requests/catalog.js';
 
 const roleSchema=z.enum(['User','Branch manager','Department head','IT','CITO','COO','HR','Admin','Platform Admin','Super Admin']);
 const profileSchema=z.object({employeeId:text(40).regex(/^[A-Za-z0-9_-]+$/),name:text(160),email:optionalEmailSchema,role:roleSchema,branchId:id,departmentId:id,designationId:id.nullable().optional()}).strict();
@@ -32,8 +34,9 @@ export function directoryRoutes(db,config){
   res.type('image/png').send(row.Signature);
  });
  router.get('/lookups',async(req,res)=>{
-  const result=await db.query(`SELECT Id,Kind,Name FROM dbo.Lookups WHERE Active=1 ORDER BY Kind,Name; SELECT Id,Name,TransferManaged FROM dbo.Systems WHERE Active=1 ORDER BY Name; SELECT sr.Id,sr.SystemId,sr.Name FROM dbo.SystemRoles sr JOIN dbo.Systems s ON s.Id=sr.SystemId WHERE sr.Active=1 AND s.Active=1 ORDER BY sr.Name; SELECT Code,Name,IncludesHr,InitiatorRoles FROM dbo.RequestTypes WHERE Active=1; SELECT TypeCode,Position,Role FROM dbo.WorkflowSteps ORDER BY TypeCode,Position; SELECT g.Id,g.Name,g.Email,CAST(CASE WHEN EXISTS(SELECT 1 FROM dbo.MailingGroupMembers m WHERE m.GroupId=g.Id AND m.UserId=@actor) THEN 1 ELSE 0 END AS bit) AS IsMember FROM dbo.MailingGroups g WHERE g.Active=1`,{actor:p.id(req.user.Id)});
-  res.json({organizations:result.recordsets[0],systems:result.recordsets[1],systemRoles:result.recordsets[2],requestTypes:result.recordsets[3].map(type=>({...type,InitiatorRoles:JSON.parse(type.InitiatorRoles)})),workflowSteps:result.recordsets[4],mailingGroups:result.recordsets[5],mockLoginEnabled:localMockRequest(config,req)});
+  const result=await db.query(`SELECT Id,Kind,Name FROM dbo.Lookups WHERE Active=1 ORDER BY Kind,Name; SELECT Id,Name,TransferManaged FROM dbo.Systems WHERE Active=1 ORDER BY Name; SELECT sr.Id,sr.SystemId,sr.Name FROM dbo.SystemRoles sr JOIN dbo.Systems s ON s.Id=sr.SystemId WHERE sr.Active=1 AND s.Active=1 ORDER BY sr.Name; SELECT rt.Code,rt.Name,rt.IncludesHr,rt.InitiatorRoles,CASE WHEN @catalogAdmin=1 THEN (SELECT COUNT(*) FROM dbo.Requests history WHERE history.TypeCode=rt.Code AND history.DeletedAt IS NULL) ELSE 0 END AS ExistingRequests FROM dbo.RequestTypes rt WHERE rt.Active=1; SELECT TypeCode,Position,Role FROM dbo.WorkflowSteps ORDER BY TypeCode,Position; SELECT g.Id,g.Name,g.Email,CAST(CASE WHEN EXISTS(SELECT 1 FROM dbo.MailingGroupMembers m WHERE m.GroupId=g.Id AND m.UserId=@actor) THEN 1 ELSE 0 END AS bit) AS IsMember FROM dbo.MailingGroups g WHERE g.Active=1`,{actor:p.id(req.user.Id),catalogAdmin:p.bit(isAdmin(req.user))});
+  const types=result.recordsets[3].map(type=>({...type,InitiatorRoles:JSON.parse(type.InitiatorRoles)}));
+  res.json({organizations:result.recordsets[0],systems:result.recordsets[1],systemRoles:result.recordsets[2],requestTypes:portalRequestTypes(types),legacyRequestTypes:isAdmin(req.user)?types.filter(type=>!isCurrentRequestType(type.Code)):[],workflowSteps:result.recordsets[4],mailingGroups:result.recordsets[5],mockLoginEnabled:localMockRequest(config,req)});
  });
  router.get('/users',async(req,res)=>{
   const filter=parse(pageSchema.extend({search:text(100,0).default('')}).strict(),req.query);
@@ -74,6 +77,7 @@ export function directoryRoutes(db,config){
    if(user.Role==='Super Admin'&&(!body.active||body.role!=='Super Admin'))requireCondition((await query("SELECT COUNT(*) AS Total FROM dbo.Users WITH(UPDLOCK,HOLDLOCK) WHERE Role='Super Admin' AND Active=1")).recordset[0].Total>1,409,'LAST_SUPER_ADMIN');
    if(user.Role!==body.role||!body.active)await query('UPDATE dbo.RoleDelegations SET RevokedAt=SYSUTCDATETIME(),RevokedBy=@actor WHERE (PrincipalId=@id OR ActingUserId=@id) AND RevokedAt IS NULL',{id:p.id(userId),actor:p.id(req.user.Id)});
    await validateLookups(query,body);
+   await closeAuditSessions(query,{userId,reason:!body.active?'account_disabled':user.Role!==body.role?'role_changed':'account_updated'});
    await query('UPDATE dbo.Users SET Name=@name,Email=@email,Role=@role,BranchId=@branch,DepartmentId=@department,DesignationId=@designation,Active=@active,UpdatedAt=SYSUTCDATETIME() WHERE Id=@id; UPDATE dbo.Sessions SET RevokedAt=SYSUTCDATETIME() WHERE UserId=@id',{id:p.id(userId),name:p.text(body.name,160),email:p.text(body.email,254),role:p.text(body.role,40),branch:p.id(body.branchId),department:p.id(body.departmentId),designation:p.id(body.designationId),active:p.bit(body.active)});await audit(query,req,'user.updated',userId,{previousRole:user.Role,role:body.role,active:body.active});
   });res.status(204).end();
  });

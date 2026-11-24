@@ -12,7 +12,7 @@ export async function resolveManager(query,role,branchId,departmentId){
  const assigned=(await query('SELECT a.UserId,u.Active FROM dbo.OrganizationApprovers a WITH(HOLDLOCK) JOIN dbo.Users u ON u.Id=a.UserId WHERE a.ScopeId=@scope',{scope:p.id(scope)})).recordset;
  if(assigned.length){requireCondition(assigned[0].Active,409,'APPROVER_INACTIVE','The assigned manager is inactive. Ask IT to update the approver assignment.');return assigned[0].UserId;}
  const legacy=(await query("SELECT Id FROM dbo.Users WHERE Active=1 AND Role=@role AND ((@role=N'Branch manager' AND BranchId=@branch) OR (@role=N'Department head' AND DepartmentId=@department))",{role:p.text(role,40),branch:p.id(branchId),department:p.id(departmentId)})).recordset;
- requireCondition(legacy.length===1,409,'APPROVER_REQUIRED','Ask IT or Super Admin to assign a manager for this branch or department before submitting.');
+ requireCondition(legacy.length===1,409,'APPROVER_REQUIRED',legacy.length?'Multiple active legacy managers match this scope. IT, Admin or Super Admin must select its assigned manager in Approver assignments.':'No active manager is assigned to this exact branch or department. IT, Admin or Super Admin must assign its manager in Approver assignments.');
  return legacy[0].Id;
 }
 export async function saveAssignment(db,req,scopeId,body){

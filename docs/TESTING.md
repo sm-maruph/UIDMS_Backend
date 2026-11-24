@@ -147,6 +147,8 @@ It creates isolated fixture organizations, users and a request type. It verifies
 
 ## Organization approver assignments
 
+Workflow regression coverage also checks that missing assignments report every blocking exact scope/ticket before pending-step mutation. The rollback-only workflow SQL test verifies that an assignment failure leaves the previous default and existing step rows unchanged. Request catalog tests cover current form labels, retired creation rejection and administrator-only legacy counts. Frontend tests cover separation of used historical workflows and explicit similar-department suggestions. Browser checks verify the error panel, direct scope links, preselected assignment record, confirmation flow and desktop/mobile layouts.
+
 `test/approver-assignments.test.js` checks IT/Super Admin restrictions, fresh sessions, strict payloads, stale mapping versions, missing/inactive accounts, exact-ID review authorization, self-approval prevention, role preservation and waiting-only reconciliation. Frontend assignment tests cover menu permission, a scoped ordinary User's approval badge/list, actual step precedence and server-authorized query recipients. Browser checks exercise finding an unknown/valid system ID, confirming and saving both scope types, refreshed assignee display, and light/dark layouts at desktop, tablet and mobile sizes.
 
 After applying migration 014, run `test/approver-assignments.sql.test.js` with `UIDMS_SQL_APPROVER_SMOKE=true` and the local development `.env`. It verifies branch and department routing to exact IDs, multiple scopes per employee, unchanged account roles, visibility, pending-step reassignment, preserved decisions, stale version rejection and credential-safe query participant data. All fixtures roll back. See [setup and test command](APPROVER-ASSIGNMENTS.md).
@@ -155,3 +157,17 @@ After applying migration 014, run `test/approver-assignments.sql.test.js` with `
 ## Timed acting authority and administrator boundaries
 
 See [roles and acting appointments](ROLES-AND-ACTING.md) for the current verified role matrix, deployment migration 015, API and rollback-only SQL test. Acting authority is time-bound, evaluated on each API request, restricted to the responsible principal/scope and cannot be delegated again. Admin manages ordinary roles including IT/CITO, but only Super Admin grants new administrator authority; Admin may maintain existing administrator accounts. Direct self-access editing is restricted to IT/Admin/Super Admin, including effective acting IT; mock accounts have no exception. The SQL test verifies authority expiring inside an existing AD-backed session, scope/role replacement, actual acting approver attribution and preserved decisions.
+
+## Session audit timelines
+
+`test/session-audit.test.js` checks administrator-only reads, bounded typed filters, inclusive Dhaka dates, nested secret redaction, navigation identity and safe failed-action metadata. Frontend `sessionAudit.test.js` checks timestamps, duration/unknown boundaries, labels and pagination deduplication.
+
+After migration 016, run the rollback-only local SQL smoke test in PowerShell:
+
+```powershell
+$env:UIDMS_SQL_AUDIT_SMOKE = "true"
+node --env-file=.env --test test/session-audit.sql.test.js
+Remove-Item Env:UIDMS_SQL_AUDIT_SMOKE
+```
+
+It requires a development database on loopback, injects an AD verifier (no real AD sign-in), and verifies linked login/navigation/request/logout, forwarded IPv4/IPv6, redaction, administrator boundaries, timeline pagination, retained history after credential cleanup, replacement/idle expiry, historical grouping and append-only protection. All fixtures roll back; request sequence values may advance. The normal suite skips this SQL test.

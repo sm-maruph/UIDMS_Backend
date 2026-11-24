@@ -40,14 +40,14 @@ test('SQL workflows drive approval, live pending-step changes, query resumption 
     const payload=()=>({typeCode:code,branchId:branch.Id,departmentId:department.Id,justification:'Controlled workflow verification.',details:{},people:[{employeeId:actors.User.EmployeeId,name:actors.User.Name,branchId:branch.Id,departmentId:department.Id,details:{}}],items:[{employeeId:actors.User.EmployeeId,systemId:system.Id,systemRoleId:system.RoleId,operation:'grant'}],consent:true});
     const current=id=>loadTicket(query,id,actors.IT);
     const steps=id=>query('SELECT * FROM dbo.RequestSteps WHERE RequestId=@id ORDER BY Position',{id:p.id(id)}).then(result=>result.recordset);
-    const approve=async(id,role)=>decide(scoped,req(role),id,{version:(await current(id)).Version.toString('hex'),decision:'approve',remark:'Fixture approval'});
+    const approve=async(id,role,remark='Fixture approval')=>decide(scoped,req(role),id,{version:(await current(id)).Version.toString('hex'),decision:'approve',...(remark==null?{}:{remark})});
     const appFor=(role,routes)=>{const app=express();app.use(express.json());app.use((request,res,next)=>{Object.assign(request,{user:actors[role],id:randomUUID()});next();});app.use(routes);app.use(errorHandler);return app;};
     const processing=appFor('IT',fulfilmentRoutes(scoped,config));
 
     await update(['CITO']);
     const first=await createTicket(scoped,req('User'),payload());assert.deepEqual((await steps(first.id)).map(step=>step.Role),['CITO']);
     const firstDetail=await details(query,await current(first.id),actors.IT);assert.deepEqual(firstDetail.workflowSteps.map(step=>step.role),['CITO']);
-    await approve(first.id,'CITO');assert.equal((await current(first.id)).Status,'Approved');
+    assert.equal((await approve(first.id,'CITO',null)).decisionLabel,'Approved');assert.equal((await steps(first.id))[0].Remark,'Approved');assert.equal((await current(first.id)).Status,'Approved');
     const drafts=(await request(processing).get(`/requests/${first.id}/email-drafts`)).body.items;assert.ok(drafts.length);
     for(const draft of drafts)assert.equal((await request(processing).post(`/requests/${first.id}/email-drafts/${draft.id}/sent`).send({confirmedSent:true,email:{to:['fixture@combankbd.com'],cc:draft.cc,subject:draft.subject,body:draft.body}})).status,204);
     assert.equal((await request(processing).post(`/requests/${first.id}/processing`).send({version:(await current(first.id)).Version.toString('hex'),reference:'Fixture processing'})).status,204);
@@ -56,13 +56,13 @@ test('SQL workflows drive approval, live pending-step changes, query resumption 
     assert.equal((await current(first.id)).Status,'Completed');
 
     await update(['CITO','COO']);
-    const active=await createTicket(scoped,req('User'),payload());await approve(active.id,'CITO');
+    const active=await createTicket(scoped,req('User'),payload());assert.equal((await approve(active.id,'CITO',null)).decisionLabel,'Recommended');assert.equal((await steps(active.id))[0].Remark,'Recommended');assert.equal((await current(active.id)).Status,'In review');
     const originalDecision=(await steps(active.id))[0],oldVersion=(await current(active.id)).Version.toString('hex');
     const changed=await update(['CITO','HR','COO']);assert.equal(changed.updatedRequests,1);
     const changedSteps=await steps(active.id);assert.deepEqual(changedSteps.map(step=>step.Role),['CITO','HR','COO']);assert.deepEqual(changedSteps[0],originalDecision);
     await assert.rejects(decide(scoped,req('COO'),active.id,{version:oldVersion,decision:'approve'}),error=>error.code==='STALE_VERSION');
     await assert.rejects(approve(active.id,'COO'),error=>error.code==='NOT_ASSIGNED');
-    await approve(active.id,'HR');await approve(active.id,'COO');assert.equal((await current(active.id)).Status,'Approved');
+    await approve(active.id,'HR');assert.equal((await steps(active.id))[1].Remark,'Fixture approval');assert.equal((await approve(active.id,'COO',null)).decisionLabel,'Approved');assert.equal((await steps(active.id))[2].Remark,'Approved');assert.equal((await current(active.id)).Status,'Approved');
     assert.equal((await current(first.id)).Status,'Completed');
 
     await update(['CITO','COO']);
@@ -93,6 +93,13 @@ test('SQL workflows drive approval, live pending-step changes, query resumption 
     const filter={scope:'visible',sort:'newest',page:1,pageSize:100,search:newUser.ticketNumber};
     const custodianList=await listTickets(scoped,actors['Branch manager'],filter);assert.equal(custodianList.items.length,1);assert.equal(custodianList.items[0].deliveryForMe,true);
     const reviewed=await listTickets(scoped,actors.CITO,{...filter,search:first.ticketNumber});assert.equal(reviewed.items[0].reviewedByMe,true);
+    const savedDefault=(await query('SELECT Role FROM dbo.WorkflowSteps WHERE TypeCode=@code ORDER BY Position',{code:p.str(code,50)})).recordset;
+    const untouched=await steps(scopedRequest.id);
+    await query('UPDATE dbo.Users SET Active=0 WHERE Id=@id',{id:p.id(actors['Branch manager'].Id)});
+    const rollbackSave={transaction:async work=>{await query('SAVE TRANSACTION WorkflowAssignmentCheck');try{return await work(query);}catch(error){await query('ROLLBACK TRANSACTION WorkflowAssignmentCheck');throw error;}}};
+    await assert.rejects(saveWorkflow(rollbackSave,req('Super Admin'),code,{roles:['Manager','CITO'],applyToOpenRequests:true}),error=>error.code==='WORKFLOW_ASSIGNMENTS_INCOMPLETE'&&error.details.requestCount===2&&error.details.assignments[0].scopeName===branch.Name);
+    assert.deepEqual((await query('SELECT Role FROM dbo.WorkflowSteps WHERE TypeCode=@code ORDER BY Position',{code:p.str(code,50)})).recordset,savedDefault);
+    assert.deepEqual(await steps(scopedRequest.id),untouched);
     throw rollback;
    }finally{await pending;}
   }),error=>error===rollback);

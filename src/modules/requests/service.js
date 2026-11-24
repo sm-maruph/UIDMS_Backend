@@ -8,6 +8,7 @@ import {managerRole,assertVersion,assertReview,visibility,actorParams,scopedVisi
 import {loadTicket,currentStep,ticketSummary} from './repository.js';
 import {resolveManager} from '../directory/approvers.js';
 import {approvalPlan} from './system-workflows.js';
+import {retiredRequestType} from './catalog.js';
 import {createEmailDrafts} from '../fulfilment/system-email.js';
 
 export async function validateCreation(query,body,user){
@@ -60,6 +61,7 @@ export async function validateCreation(query,body,user){
  return {type,people,flow,targetBranch,targetDepartment,manager,managerUserId,subject};
 }
 export async function createTicket(db,req,body){return db.transaction(async query=>{
+ requireCondition(!retiredRequestType(body.typeCode),400,'REQUEST_TYPE_RETIRED','This older request type is no longer used for new submissions. Refresh the portal and choose the current request form.');
  const plan=await validateCreation(query,body,req.user);
  const id=randomUUID();
  const sequence=(await query('SELECT NEXT VALUE FOR dbo.TicketSequence AS Value')).recordset[0].Value;
@@ -115,12 +117,13 @@ export async function decide(db,req,id,body){return db.transaction(async query=>
   const invalid=(await query("SELECT COUNT(*) AS Count FROM dbo.RequestPeople p LEFT JOIN dbo.HrClearances h ON h.PersonId=p.Id WHERE p.RequestId=@id AND (h.PersonId IS NULL OR h.Police='Pending' OR h.ReferenceCheck<>'Both checked')",{id:p.id(id)})).recordset[0].Count;
   requireCondition(!invalid,409,'HR_CLEARANCE_INCOMPLETE');
  }
- await query('UPDATE dbo.RequestSteps SET Status=@status,ActorId=@actor,Remark=@remark,DecidedAt=SYSUTCDATETIME() WHERE RequestId=@id AND Position=@position',{status:p.str(body.decision==='approve'?'Approved':'Rejected',15),actor:p.id(req.user.Id),remark:p.text(body.remark||'Recommended',2000),id:p.id(id),position:p.int(ticket.CurrentPosition)});
  const next=(await query('SELECT TOP(1) Position FROM dbo.RequestSteps WHERE RequestId=@id AND Position>@position ORDER BY Position',{id:p.id(id),position:p.int(ticket.CurrentPosition)})).recordset[0];
+ const decisionLabel=body.decision==='reject'?'Rejected':next?'Recommended':'Approved';
+ await query('UPDATE dbo.RequestSteps SET Status=@status,ActorId=@actor,Remark=@remark,DecidedAt=SYSUTCDATETIME() WHERE RequestId=@id AND Position=@position',{status:p.str(body.decision==='approve'?'Approved':'Rejected',15),actor:p.id(req.user.Id),remark:p.text(body.remark?.trim()||decisionLabel,2000),id:p.id(id),position:p.int(ticket.CurrentPosition)});
  const status=body.decision==='reject'?'Rejected':next?'In review':'Approved';
  await query('UPDATE dbo.Requests SET Status=@status,CurrentPosition=@position,UpdatedAt=SYSUTCDATETIME() WHERE Id=@id',{status:p.str(status,30),position:p.int(next&&body.decision==='approve'?next.Position:ticket.CurrentPosition),id:p.id(id)});
  if(status==='Approved')await createEmailDrafts(query,ticket);
- await audit(query,req,`request.${body.decision}`,id,{position:ticket.CurrentPosition});
- await notify(query,ticket.RequesterId,id,`${ticket.TicketNumber}: ${status}.`);
- return {status};
+ await audit(query,req,`request.${body.decision}`,id,{position:ticket.CurrentPosition,role:step.Role,decisionLabel});
+ await notify(query,ticket.RequesterId,id,`${ticket.TicketNumber}: ${decisionLabel}.`);
+ return {status,decisionLabel};
 });}

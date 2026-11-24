@@ -247,7 +247,9 @@ Writes to template and workflow configuration require recent sign-in. Use `{{ite
 | GET | `/dashboard` | Live scoped totals, approval/processing queues, query/response counts |
 | GET | `/notifications` | Paginated current-user notification history |
 | POST | `/notifications/:id/read` | `{}`; acknowledge own notification |
-| GET | `/audit?event=...` | Paginated audit events; Platform Admin/Super Admin |
+| GET | `/audit` | Admin/Super Admin; paginated events with IP, actor and search/category/date filters |
+| GET | `/audit/:eventId/session` | Admin/Super Admin; paginated login-to-end timeline for a selected audit event |
+| POST | `/activity` | Authenticated, Origin/CSRF required; allowlisted `{page,ticketId?}` navigation event |
 | PUT | `/admin/workflows/:code` | `{roles:["CITO"],expectedRoles?:[...],applyToOpenRequests?:true}`; Admin/Super Admin, fresh login; returns `{updatedRequests}` |
 | POST | `/admin/mailing-groups` | `{name,email}`; Admin/Super Admin, allowed domain |
 | PUT | `/admin/mailing-groups/:id/members` | `{userIds:[...]}`; Admin/Super Admin, audited |
@@ -261,6 +263,10 @@ Ticket detail includes ordered `workflowSteps` with `position`, `role`, `status`
 Use the paginated request collection with permitted scope/status/search for ticket reports and the user-access collection for current-access reports. There is no anonymous bulk export or unlimited `pageSize=all` endpoint. Stream multiple bounded pages into an authorized export and protect exported PII; prevent spreadsheet formula injection if later exporting CSV.
 
 ## Acting appointments and current permissions
+
+The lookup catalog lists only services submitted by current portal forms. Retired `new-id`, `batch-access` and `branch-transfer` records stay readable, while new POST submissions using these codes return `400 REQUEST_TYPE_RETIRED`. Administrators also receive `legacyRequestTypes` with existing-record counts; only used legacy workflows appear under the explicit Older request workflows section. No request history or saved workflow is deleted.
+
+Applying a workflow to ongoing requests preflights every pending manager/head assignment before replacing any steps. `409 WORKFLOW_ASSIGNMENTS_INCOMPLETE` includes `error.details.assignments` grouped by exact scope, with role, branch/department, affected ticket numbers and counts. The default workflow and all ticket changes roll back on failure. The UI links each scope to Approver assignments in a separate tab. A manager assigned to an `IT` lookup does not implicitly become the head of a separate `IT Department` lookup; similarly named department records offer an explicit, user-confirmed assignment suggestion.
 
 [Roles and acting API](ROLES-AND-ACTING.md) documents the permission matrix and `GET /acting-options`, `GET /acting-candidates`, `GET /acting-assignments`, `POST /acting-assignments`, and `POST /acting-assignments/:id/end`. Appointment writes require a fresh session, Origin and CSRF. Authentication refreshes effective authority on each request, including expiry within an existing session. Migration 015/schema 12 is required.
 
@@ -279,3 +285,15 @@ Errors have `{error:{code,message,requestId}}`. Typical status codes:
 - `415`: unsupported content type.
 - `429`: rate limit; honor `Retry-After` or `error.retryAfterSeconds`. The login failure quota applies to unsuccessful credential POSTs, excluding ordinary setup/session reads, successful sign-in/MFA and infrastructure errors. The overall API request cap still applies to all endpoints. Do not automatically resubmit passwords after a cooldown.
 - `500`: generic error with correlation ID; internal SQL and stack traces are not returned.
+
+## Audit session details
+
+Migration 016/schema 13 is required. `/audit` accepts `page`, `pageSize` (max 100), `search` (max 100 characters), exact `event`, `category` (`all`, `auth`, `requests`, `approvals`, `queries`, `configuration`, `navigation`), and optional `from`/`to` dates (`YYYY-MM-DD`, inclusive Dhaka calendar dates). It returns `{items,total,page,pageSize,stats:{people,signIns}}`. Event IDs are decimal strings to preserve SQL bigint precision.
+
+`/audit/:eventId/session?page=1&pageSize=50` returns `{session,anchor,items,total,page,pageSize,notice?}` in chronological order. `session` contains public audit ID, user snapshot, role at login, provider, start/last-seen/expiry/end timestamps, end reason, sign-in/last IP and source; it never includes bearer tokens or hashes. `session` is null for unassociated pre-authentication/system activity. Metadata is recursively redacted for secret/credential fields. Reading a timeline itself writes `audit.session_viewed`.
+
+New sessions use exact non-credential audit identifiers. Old sessions migrated from still-retained token rows use time boundaries; older events without IDs use recorded login/logout boundaries and an explicit historical notice. Missing logout times remain unknown; inactivity timeout is a session end, not an invented logout. Durable headers and audit events survive `sessions:cleanup`. The runtime account retains append-only restrictions on AuditEvents.
+
+`/activity` accepts only known UI page names and an optional authorized ticket UUID. Actor, session, IP and timestamp come from the server. Client navigation is labelled `client-navigation`; this is an activity record, not proof that every click or keystroke occurred. Background refreshes are not logged as user navigation. Existing business operations remain transactionally audited; failed authenticated operations log only safe route/method/status/code after rollback, without payloads or credentials.
+
+Approval decisions retain `decision:"approve"` for a positive step decision. The server derives `decisionLabel` from the saved request steps: `Recommended` while a later approval step exists, and `Approved` for the final step. It returns `{status,decisionLabel}` and records the label/role in audit metadata. Missing or whitespace-only remarks default to that label; supplied remarks are trimmed and limited to 2000 characters. The UI shows **Recommended** to earlier reviewers and **Approve** to the last reviewer, including an acting reviewer, with a request-summary/optional-remarks confirmation dialog. No role rank or client flag can bypass remaining steps.

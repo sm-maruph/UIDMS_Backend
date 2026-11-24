@@ -2,7 +2,6 @@ import {Router} from 'express';
 import {p} from '../../core/db.js';
 import {parse,pageSchema,uuidParam,z,text} from '../../core/validation.js';
 import {actorParams,visibility} from '../requests/policy.js';
-import {roles} from '../auth/service.js';
 
 export function dashboardRoutes(db){
  const router=Router();
@@ -30,10 +29,6 @@ export function dashboardRoutes(db){
  router.post('/notifications/:id/read',async(req,res)=>{
   const notification=parse(z.string().regex(/^\d{1,18}$/),req.params.id);
   await db.query('UPDATE dbo.Notifications SET ReadAt=COALESCE(ReadAt,SYSUTCDATETIME()) WHERE Id=@id AND UserId=@user',{id:{type:(await import('../../core/db.js')).sql.BigInt,value:notification},user:p.id(req.user.Id)});res.status(204).end();
- });
- router.get('/audit',roles('Super Admin','Admin'),async(req,res)=>{
-  const filter=parse(pageSchema.extend({event:text(100,0).default('')}).strict(),req.query);
-  const result=await db.query('SELECT COUNT(*) AS Total FROM dbo.AuditEvents WHERE @event=\'\' OR Event=@event; SELECT a.Id,a.Event,a.EntityId,a.Ip,a.CorrelationId,a.CreatedAt,a.Metadata,u.EmployeeId,u.Name FROM dbo.AuditEvents a LEFT JOIN dbo.Users u ON u.Id=a.ActorId WHERE @event=\'\' OR a.Event=@event ORDER BY a.Id DESC OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY',{event:p.str(filter.event),offset:p.int((filter.page-1)*filter.pageSize),size:p.int(filter.pageSize)});res.json({items:result.recordsets[1].map(row=>({...row,Metadata:JSON.parse(row.Metadata)})),total:result.recordsets[0][0].Total,page:filter.page,pageSize:filter.pageSize});
  });
  return router;
 }

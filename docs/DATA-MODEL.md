@@ -93,3 +93,7 @@ Append-only audit restrictions protect against the runtime account changing hist
 This backend manages the portal's workflow, records and access inventory. Actual ICBS/AD/email/file-server account creation, password resets, external forwarding and mailbox/group configuration require your approved provisioning systems or IT procedures. MailingGroupMembers is a portal directory record; changing it does not independently change Exchange/AD. Do not claim provisioning succeeded merely because an HTTP call succeeded.
 
 JSON Details does not replace business validation. Critical beneficiary, scope, selected access, operation and workflow fields are normalized and enforced. Supplementary form fields should receive any additional bank-specific validation before integration, especially device policy, external forwarding restrictions, naming conventions and HR evidence requirements.
+
+## Durable session audit (schema 13)
+
+`AuditSessions` stores a non-credential public GUID, user/name/role/provider snapshot, normalized sign-in and last IP, login/last-seen/expiry times and explicit or derived end reason/time. `Sessions.AuditSessionId` links ephemeral credentials to that durable header; `AuditEvents.AuditSessionId` and `ActorRole` identify the session and effective actor role on each event. Cleanup removes expired credential sessions but retains headers and append-only events. Migration 016 never rewrites historical audit rows. Older records retain clearly disclosed inferred grouping.
