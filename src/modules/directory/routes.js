@@ -1,3 +1,5 @@
+import {routingNameSql} from './organization-names.js';
+import {organizationRoutes} from './organizations.js';
 import {Router} from 'express';
 import {p} from '../../core/db.js';
 import {z,id,text,parse,uuidParam,pageSchema} from '../../core/validation.js';
@@ -21,6 +23,7 @@ const profileSchema=z.object({employeeId:text(40).regex(/^[A-Za-z0-9_-]+$/),name
 const isAdmin=isAdministrator;
 export function directoryRoutes(db,config){
  const router=Router();
+ router.use(organizationRoutes(db));
  router.use(profileRoutes(db,config));
  router.put('/profile/signature',async(req,res)=>{
   const body=parse(z.object({base64:z.string().max(349528).regex(/^[A-Za-z0-9+/]+={0,2}$/)}).strict(),req.body);
@@ -34,7 +37,7 @@ export function directoryRoutes(db,config){
   res.type('image/png').send(row.Signature);
  });
  router.get('/lookups',async(req,res)=>{
-  const result=await db.query(`SELECT Id,Kind,Name FROM dbo.Lookups WHERE Active=1 ORDER BY Kind,Name; SELECT Id,Name,TransferManaged FROM dbo.Systems WHERE Active=1 ORDER BY Name; SELECT sr.Id,sr.SystemId,sr.Name FROM dbo.SystemRoles sr JOIN dbo.Systems s ON s.Id=sr.SystemId WHERE sr.Active=1 AND s.Active=1 ORDER BY sr.Name; SELECT rt.Code,rt.Name,rt.IncludesHr,rt.InitiatorRoles,CASE WHEN @catalogAdmin=1 THEN (SELECT COUNT(*) FROM dbo.Requests history WHERE history.TypeCode=rt.Code AND history.DeletedAt IS NULL) ELSE 0 END AS ExistingRequests FROM dbo.RequestTypes rt WHERE rt.Active=1; SELECT TypeCode,Position,Role FROM dbo.WorkflowSteps ORDER BY TypeCode,Position; SELECT g.Id,g.Name,g.Email,CAST(CASE WHEN EXISTS(SELECT 1 FROM dbo.MailingGroupMembers m WHERE m.GroupId=g.Id AND m.UserId=@actor) THEN 1 ELSE 0 END AS bit) AS IsMember FROM dbo.MailingGroups g WHERE g.Active=1`,{actor:p.id(req.user.Id),catalogAdmin:p.bit(isAdmin(req.user))});
+  const result=await db.query(`SELECT l.Id,l.Kind,l.Name,${routingNameSql('l')} AS RoutingName FROM dbo.Lookups l WHERE l.Active=1 ORDER BY l.Kind,l.Name; SELECT Id,Name,TransferManaged FROM dbo.Systems WHERE Active=1 ORDER BY Name; SELECT sr.Id,sr.SystemId,sr.Name FROM dbo.SystemRoles sr JOIN dbo.Systems s ON s.Id=sr.SystemId WHERE sr.Active=1 AND s.Active=1 ORDER BY sr.Name; SELECT rt.Code,rt.Name,rt.IncludesHr,rt.InitiatorRoles,CASE WHEN @catalogAdmin=1 THEN (SELECT COUNT(*) FROM dbo.Requests history WHERE history.TypeCode=rt.Code AND history.DeletedAt IS NULL) ELSE 0 END AS ExistingRequests FROM dbo.RequestTypes rt WHERE rt.Active=1; SELECT TypeCode,Position,Role FROM dbo.WorkflowSteps ORDER BY TypeCode,Position; SELECT g.Id,g.Name,g.Email,CAST(CASE WHEN EXISTS(SELECT 1 FROM dbo.MailingGroupMembers m WHERE m.GroupId=g.Id AND m.UserId=@actor) THEN 1 ELSE 0 END AS bit) AS IsMember FROM dbo.MailingGroups g WHERE g.Active=1`,{actor:p.id(req.user.Id),catalogAdmin:p.bit(isAdmin(req.user))});
   const types=result.recordsets[3].map(type=>({...type,InitiatorRoles:JSON.parse(type.InitiatorRoles)}));
   res.json({organizations:result.recordsets[0],systems:result.recordsets[1],systemRoles:result.recordsets[2],requestTypes:portalRequestTypes(types),legacyRequestTypes:isAdmin(req.user)?types.filter(type=>!isCurrentRequestType(type.Code)):[],workflowSteps:result.recordsets[4],mailingGroups:result.recordsets[5],mockLoginEnabled:localMockRequest(config,req)});
  });
@@ -81,10 +84,6 @@ export function directoryRoutes(db,config){
    await query('UPDATE dbo.Users SET Name=@name,Email=@email,Role=@role,BranchId=@branch,DepartmentId=@department,DesignationId=@designation,Active=@active,UpdatedAt=SYSUTCDATETIME() WHERE Id=@id; UPDATE dbo.Sessions SET RevokedAt=SYSUTCDATETIME() WHERE UserId=@id',{id:p.id(userId),name:p.text(body.name,160),email:p.text(body.email,254),role:p.text(body.role,40),branch:p.id(body.branchId),department:p.id(body.departmentId),designation:p.id(body.designationId),active:p.bit(body.active)});await audit(query,req,'user.updated',userId,{previousRole:user.Role,role:body.role,active:body.active});
   });res.status(204).end();
  });
- router.post('/lookups',roles('Admin','Super Admin'),recentAuth,async(req,res)=>{
-  const body=parse(z.object({kind:z.enum(['branch','department','designation']),name:text(150)}).strict(),req.body);
-  const row=await db.transaction(async query=>{const result=await query('INSERT dbo.Lookups(Kind,Name) OUTPUT inserted.Id VALUES(@kind,@name)',{kind:p.str(body.kind,20),name:p.text(body.name,150)});await audit(query,req,'lookup.created',result.recordset[0].Id,{kind:body.kind});return result.recordset[0];});res.status(201).json(row);
- });
  router.post('/systems',roles('Admin','Super Admin'),recentAuth,async(req,res)=>{
   const body=parse(z.object({name:text(150),roles:z.array(text(150)).max(100).default([])}).strict(),req.body);
   const result=await db.transaction(async query=>{const row=(await query('INSERT dbo.Systems(Name) OUTPUT inserted.Id VALUES(@name)',{name:p.text(body.name,150)})).recordset[0];for(const name of new Set(body.roles))await query('INSERT dbo.SystemRoles(SystemId,Name) VALUES(@id,@name)',{id:p.id(row.Id),name:p.text(name,150)});await audit(query,req,'system.created',row.Id);return row;});res.status(201).json(result);
@@ -96,10 +95,6 @@ export function directoryRoutes(db,config){
  router.post('/mailing-groups',roles('Admin','Super Admin'),recentAuth,async(req,res)=>{
   const body=parse(z.object({name:text(160),email:z.email().max(254)}).strict(),req.body);
   const row=await db.transaction(async query=>{const result=(await query('INSERT dbo.MailingGroups(Name,Email) OUTPUT inserted.Id VALUES(@name,@email)',{name:p.text(body.name,160),email:p.text(body.email.toLowerCase(),254)})).recordset[0];await audit(query,req,'mailing_group.created',result.Id);return result;});res.status(201).json(row);
- });
- router.patch('/lookups/:id',roles('Admin','Super Admin'),recentAuth,async(req,res)=>{
-  const lookup=uuidParam(req),body=parse(z.object({name:text(150),active:z.boolean()}).strict(),req.body);
-  await db.transaction(async query=>{const result=await query('UPDATE dbo.Lookups SET Name=@name,Active=@active OUTPUT inserted.Id WHERE Id=@id',{id:p.id(lookup),name:p.text(body.name,150),active:p.bit(body.active)});requireCondition(result.recordset.length,404,'LOOKUP_NOT_FOUND');await audit(query,req,'lookup.updated',lookup,{active:body.active});});res.status(204).end();
  });
  router.patch('/systems/:id',roles('Admin','Super Admin'),recentAuth,async(req,res)=>{
   const system=uuidParam(req),body=parse(z.object({name:text(150),active:z.boolean(),transferManaged:z.boolean()}).strict(),req.body);

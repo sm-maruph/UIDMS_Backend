@@ -15,7 +15,7 @@ function fixture(roles=['Manager','IT','CITO','COO']){
  const query=async(text,params)=>{
   calls.push({text,params});
   if(text.startsWith('SELECT * FROM dbo.RequestTypes'))return {recordset:[{Code:'upgrade',InitiatorRoles:'["User"]'}]};
-  if(text.startsWith('SELECT Id,Kind,Name FROM dbo.Lookups'))return {recordset:[{Id:branchId,Kind:'branch',Name:'Dhanmondi Branch'},{Id:departmentId,Kind:'department',Name:'Operations'}]};
+  if(text.startsWith('SELECT Id,Kind,Name'))return {recordset:[{Id:branchId,Kind:'branch',Name:'Dhanmondi Branch'},{Id:departmentId,Kind:'department',Name:'Operations'}]};
   if(text.startsWith('SELECT Id,EmployeeId,Name'))return {recordset:[{...user}]};
   if(text.startsWith('SELECT s.Id'))return {recordset:[{Id:systemId,Name:'ICBS',RoleId:roleId}]};
   if(text.startsWith('SELECT Role,Position FROM dbo.WorkflowSteps'))return {recordset:roles.map((Role,index)=>({Role,Position:index+1}))};

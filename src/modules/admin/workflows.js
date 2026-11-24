@@ -1,3 +1,4 @@
+import {routingNameSql} from '../directory/organization-names.js';
 import {p} from '../../core/db.js';
 import {z} from '../../core/validation.js';
 import {HttpError,requireCondition} from '../../core/errors.js';
@@ -22,7 +23,7 @@ export function remainingWorkflow(existing,configured,manager){
 }
 
 async function updateOpenRequests(query,req,code){
- const tickets=(await query(`SELECT r.*,rt.Name AS Action,b.Name AS TargetBranch,d.Name AS TargetDepartment,u.Email AS RequesterEmail
+ const tickets=(await query(`SELECT r.*,rt.Name AS Action,b.Name AS TargetBranch,d.Name AS TargetDepartment,u.Email AS RequesterEmail,${routingNameSql('b')} AS RoutingBranch,${routingNameSql('d')} AS RoutingDepartment
   FROM dbo.Requests r WITH(UPDLOCK,HOLDLOCK)
   JOIN dbo.Lookups b ON b.Id=COALESCE(r.DestinationBranchId,r.BranchId)
   JOIN dbo.Lookups d ON d.Id=COALESCE(r.DestinationDepartmentId,r.DepartmentId)
@@ -36,7 +37,7 @@ async function updateOpenRequests(query,req,code){
   requireCondition(existing.every(step=>['Waiting','Approved'].includes(step.Status)),409,'WORKFLOW_STATE_CONFLICT','A request changed during workflow editing. Reload and retry.');
   const items=(await query('SELECT SystemId FROM dbo.RequestItems WHERE RequestId=@id',params)).recordset;
   const configured=await approvalPlan(query,{typeCode:code,items:items.map(item=>({systemId:item.SystemId}))});
-  const pending=remainingWorkflow(existing,configured,managerRole(ticket.TargetBranch,ticket.TargetDepartment));
+  const pending=remainingWorkflow(existing,configured,managerRole(ticket.RoutingBranch||ticket.TargetBranch,ticket.RoutingDepartment||ticket.TargetDepartment));
   const completed=existing.filter(step=>step.Status==='Approved');
   for(const step of pending){
    if(!['Branch manager','Department head'].includes(step.Role))continue;

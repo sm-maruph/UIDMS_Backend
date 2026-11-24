@@ -1,3 +1,4 @@
+import {routingNameSql} from '../directory/organization-names.js';
 import {randomUUID} from 'node:crypto';
 import {p} from '../../core/db.js';
 import {requireCondition} from '../../core/errors.js';
@@ -15,7 +16,7 @@ export async function validateCreation(query,body,user){
  validateJustification(body.typeCode,body.justification);
  const type=(await query('SELECT * FROM dbo.RequestTypes WITH(UPDLOCK,HOLDLOCK) WHERE Code=@type AND Active=1',{type:p.str(body.typeCode,50)})).recordset[0];
  requireCondition(type&&(isAdministrator(user)||effectiveRoles(user).some(role=>JSON.parse(type.InitiatorRoles).includes(role))),403,'REQUEST_TYPE_FORBIDDEN');
- const lookups=(await query('SELECT Id,Kind,Name FROM dbo.Lookups WHERE Active=1')).recordset;
+ const lookups=(await query(`SELECT Id,Kind,Name,${routingNameSql('l')} AS RoutingName FROM dbo.Lookups l WHERE Active=1`)).recordset;
  const validLookup=(id,kind)=>lookups.some(row=>row.Id===id&&row.Kind===kind);
  for(const [id,kind] of [[body.branchId,'branch'],[body.departmentId,'department'],[body.destinationBranchId,'branch'],[body.destinationDepartmentId,'department']])if(id)requireCondition(validLookup(id,kind),400,'INVALID_ORGANIZATION');
  const operations=new Set(body.items.map(item=>item.operation));
@@ -53,7 +54,7 @@ export async function validateCreation(query,body,user){
   requireCondition(subject&&subject.BranchId===body.branchId&&subject.DepartmentId===body.departmentId&&people.size===1&&[...people.values()][0].userId===subject.Id,400,'INVALID_MOVEMENT_SUBJECT');
   requireCondition(body.branchId!==body.destinationBranchId||body.departmentId!==body.destinationDepartmentId,400,'DESTINATION_UNCHANGED');
  }else requireCondition(!body.subjectUserId&&!body.destinationBranchId&&!body.destinationDepartmentId,400,'UNEXPECTED_MOVEMENT_FIELDS');
- const branchName=lookups.find(row=>row.Id===targetBranch).Name,departmentName=lookups.find(row=>row.Id===targetDepartment).Name;
+ const branchName=(lookups.find(row=>row.Id===targetBranch).RoutingName||lookups.find(row=>row.Id===targetBranch).Name),departmentName=(lookups.find(row=>row.Id===targetDepartment).RoutingName||lookups.find(row=>row.Id===targetDepartment).Name);
  const flow=await approvalPlan(query,body);
  const manager=managerRole(branchName,departmentName);
  const managerUserId=flow.some(step=>step.Role==='Manager')?await resolveManager(query,manager,targetBranch,targetDepartment):null;

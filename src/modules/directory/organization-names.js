@@ -1,0 +1,2 @@
+// Original routing identity survives a display-name edit; append-only audit retains it.
+export const routingNameSql=alias=>`COALESCE((SELECT TOP(1) JSON_VALUE(history.Metadata,'$.previousName') FROM dbo.AuditEvents history WHERE history.Event='lookup.updated' AND history.EntityId=CONVERT(nvarchar(80),${alias}.Id) AND JSON_VALUE(history.Metadata,'$.previousName') IS NOT NULL ORDER BY history.Id),${alias}.Name)`;
