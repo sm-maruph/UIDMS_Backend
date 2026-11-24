@@ -14,7 +14,7 @@ export function assertReview(ticket,step,user){requireCondition(canReview(ticket
 export function assertVersion(ticket,version){requireCondition(ticket.Version.toString('hex')===version.toLowerCase(),409,'STALE_VERSION','The ticket changed. Reload it before trying again.');}
 export function managerRole(branch,department){
  const norm=value=>String(value||'').toLowerCase().replace(/centre/g,'center').replace(/[^a-z]/g,'');
- return ['headoffice','corporateoffice','digitalbankingandcardcenter'].includes(norm(branch))||(norm(branch)==='gulshanbranch'&&['cardcenter','digitalbanking','callcenter','digitalbankingandcardcenter'].includes(norm(department).replace(/department$/,'')))?'Department head':'Branch manager';
+ return ['headoffice','headofficebd','corporateoffice','digitalbankingandcardcenter'].includes(norm(branch))||(norm(branch)==='gulshanbranch'&&['cardcenter','digitalbanking','callcenter','digitalbankingandcardcenter'].includes(norm(department).replace(/department$/,'')))?'Department head':'Branch manager';
 }
 export const versionSchema=/^[a-fA-F0-9]{16}$/;
 export const workflowRoles=(typeCode,includesHr=false)=>typeCode==='reset'?['CITO']:['Manager',...(includesHr?['HR']:[]),'IT','CITO','COO'];
