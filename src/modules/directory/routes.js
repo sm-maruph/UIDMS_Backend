@@ -1,3 +1,4 @@
+import {deletionRoutes} from '../admin/deletions.js';
 import {routingNameSql} from './organization-names.js';
 import {organizationRoutes} from './organizations.js';
 import {Router} from 'express';
@@ -23,6 +24,7 @@ const profileSchema=z.object({employeeId:text(40).regex(/^[A-Za-z0-9_-]+$/),name
 const isAdmin=isAdministrator;
 export function directoryRoutes(db,config){
  const router=Router();
+ router.use(deletionRoutes(db));
  router.use(organizationRoutes(db));
  router.use(profileRoutes(db,config));
  router.put('/profile/signature',async(req,res)=>{
@@ -43,7 +45,7 @@ export function directoryRoutes(db,config){
  });
  router.get('/users',async(req,res)=>{
   const filter=parse(pageSchema.extend({search:text(100,0).default('')}).strict(),req.query);
-  const scope=`(u.Id=@actor OR @role IN ('IT','HR','CITO','COO','Admin','Platform Admin','Super Admin') OR EXISTS(SELECT 1 FROM dbo.uidms_ManagedScopes(@actor) ms JOIN dbo.Lookups ml ON ml.Id=ms.ScopeId WHERE (ml.Kind='branch' AND u.BranchId=ms.ScopeId) OR (ml.Kind='department' AND u.DepartmentId=ms.ScopeId))) AND (@search=N'' OR CHARINDEX(@search,u.Name)>0 OR CHARINDEX(@search,u.EmployeeId)>0)`;
+  const scope=`u.DeletedAt IS NULL AND (u.Id=@actor OR @role IN ('IT','HR','CITO','COO','Admin','Platform Admin','Super Admin') OR EXISTS(SELECT 1 FROM dbo.uidms_ManagedScopes(@actor) ms JOIN dbo.Lookups ml ON ml.Id=ms.ScopeId WHERE (ml.Kind='branch' AND u.BranchId=ms.ScopeId) OR (ml.Kind='department' AND u.DepartmentId=ms.ScopeId))) AND (@search=N'' OR CHARINDEX(@search,u.Name)>0 OR CHARINDEX(@search,u.EmployeeId)>0)`;
   const result=await db.query(`SELECT COUNT(*) AS Total FROM dbo.Users u WHERE ${scope}; SELECT ${userColumns},b.Name AS Branch,d.Name AS Department FROM dbo.Users u LEFT JOIN dbo.Lookups b ON b.Id=u.BranchId LEFT JOIN dbo.Lookups d ON d.Id=u.DepartmentId WHERE ${scope} ORDER BY u.Name,u.Id OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY`,{actor:p.id(req.user.Id),role:p.text(req.user.Role,40),branch:p.id(req.user.BranchId),department:p.id(req.user.DepartmentId),search:p.text(filter.search,100),offset:p.int((filter.page-1)*filter.pageSize),size:p.int(filter.pageSize)});
   res.json({items:result.recordsets[1].map(row=>({...publicUser(row),branch:row.Branch,department:row.Department})),total:result.recordsets[0][0].Total,page:filter.page,pageSize:filter.pageSize});
  });
@@ -74,7 +76,7 @@ export function directoryRoutes(db,config){
   const userId=uuidParam(req),body=parse(profileSchema.omit({employeeId:true}).extend({active:z.boolean(),version}).strict(),req.body);
   requireCondition(userId!==req.user.Id,403,'SELF_ADMINISTRATION_FORBIDDEN');
   await db.transaction(async query=>{
-   const user=(await query('SELECT Id,Role,Version,Active FROM dbo.Users WITH(UPDLOCK,HOLDLOCK) WHERE Id=@id',{id:p.id(userId)})).recordset[0];requireCondition(user,404,'USER_NOT_FOUND');requireCondition(user.Version.toString('hex')===body.version,409,'STALE_VERSION');
+   const user=(await query('SELECT Id,Role,Version,Active FROM dbo.Users WITH(UPDLOCK,HOLDLOCK) WHERE Id=@id AND DeletedAt IS NULL',{id:p.id(userId)})).recordset[0];requireCondition(user,404,'USER_NOT_FOUND');requireCondition(user.Version.toString('hex')===body.version,409,'STALE_VERSION');
    requireCondition(canManageAccount(req.user,user.Role,body.role),403,'ADMIN_ROLE_PROTECTED','Only Super Admin can create or promote administrator accounts.');
    requireCondition(hasRole(req.user,'Super Admin')||user.Active!==false||!body.active||!['Admin','Platform Admin','Super Admin'].includes(body.role),403,'ADMIN_ROLE_PROTECTED','Only Super Admin can reactivate an administrator account.');
    if(user.Role==='Super Admin'&&(!body.active||body.role!=='Super Admin'))requireCondition((await query("SELECT COUNT(*) AS Total FROM dbo.Users WITH(UPDLOCK,HOLDLOCK) WHERE Role='Super Admin' AND Active=1")).recordset[0].Total>1,409,'LAST_SUPER_ADMIN');

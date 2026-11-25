@@ -11,7 +11,7 @@ import {saveWorkflow} from '../src/modules/admin/workflows.js';
 test('SQL audit links login, navigation, actions and logout; survives token cleanup; separates sessions and identifies expiry',{
  skip:process.env.UIDMS_SQL_AUDIT_SMOKE!=='true',timeout:45000,
 },async()=>{
- const config=readConfig();assert.equal(config.NODE_ENV,'development');assert.ok(['localhost','127.0.0.1','::1'].includes(config.DB_SERVER));
+ const config={...readConfig(),SESSION_MAX_MINUTES:480,SESSION_IDLE_MINUTES:15};assert.equal(config.NODE_ENV,'development');assert.ok(['localhost','127.0.0.1','::1'].includes(config.DB_SERVER));
  const db=createDatabase(config),rollback=new Error('Session audit fixture rollback'),suffix=randomBytes(5).toString('hex');
  try{
   await db.connect();
@@ -28,6 +28,13 @@ test('SQL audit links login, navigation, actions and logout; survives token clea
     const as=(session,method,url,body,ip='192.0.2.31:53000')=>{let result=request(app)[method](url).set('Cookie',session.cookie).set('X-Forwarded-For',ip);if(method!=='get')result=result.set('Origin',config.origins[0]).set('X-CSRF-Token',session.csrf).send(body);return result;};
     const sessionFor=async role=>(await query('SELECT TOP(1) * FROM dbo.AuditSessions WHERE UserId=@user ORDER BY StartedAt DESC',{user:p.id(actors[role].Id)})).recordset[0];
     const first=await sessionFor('User');assert.equal(first.Ip,'192.0.2.31');assert.equal(first.Source,'tracked');
+    const ageSession=async()=>query('UPDATE dbo.Sessions SET LastSeenAt=DATEADD(minute,-2,SYSUTCDATETIME()) WHERE AuditSessionId=@id',{id:p.id(first.Id)});
+    const tokenRow=async()=>(await query('SELECT CreatedAt,LastSeenAt,ExpiresAt FROM dbo.Sessions WHERE AuditSessionId=@id',{id:p.id(first.Id)})).recordset[0];
+    await ageSession();const before=await tokenRow();
+    const status=await as(user,'get','/api/auth/status');assert.equal(status.status,200);assert.ok(status.body.session.expiresAt);assert.equal(+(await tokenRow()).LastSeenAt,+before.LastSeenAt,'background polling must not renew inactivity');
+    assert.equal((await as({...user,csrf:'invalid'},'post','/api/auth/continue',{})).status,403);assert.equal(+(await tokenRow()).LastSeenAt,+before.LastSeenAt,'invalid CSRF must not renew inactivity');
+    const renewed=await as(user,'post','/api/auth/continue',{reason:'continue'});assert.equal(renewed.status,200,JSON.stringify(renewed.body));const after=await tokenRow();assert.ok(+after.LastSeenAt>+before.LastSeenAt);assert.equal(+after.CreatedAt,+before.CreatedAt);assert.equal(+after.ExpiresAt,+before.ExpiresAt,'absolute duration must not be extended');
+    const restored=await as(user,'get','/api/auth/session'),restoredAgain=await as(user,'get','/api/auth/session');assert.equal(restored.body.csrfToken,user.csrf);assert.equal(restoredAgain.body.csrfToken,user.csrf,'another tab must not invalidate CSRF');
     assert.equal((await as(user,'post','/api/activity',{page:'Overview'})).status,204);assert.equal((await as(user,'post','/api/activity',{page:'My access'})).status,204);
     assert.equal((await as(user,'get','/api/audit')).status,403);
     await saveWorkflow(scoped,{user:actors.Admin,id:randomUUID(),ip:'127.0.0.1'},'reset',{roles:['CITO'],applyToOpenRequests:false});
@@ -48,6 +55,7 @@ test('SQL audit links login, navigation, actions and logout; survives token clea
     const list=await as(admin,'get','/api/audit?search='+encodeURIComponent(actors.User.EmployeeId));assert.equal(list.status,200,JSON.stringify(list.body));assert.ok(list.body.total>0);
     assert.equal((await query('SELECT EndReason FROM dbo.AuditSessions WHERE Id=@id',{id:p.id(third.Id)})).recordset[0].EndReason,'idle_timeout');
     assert.equal((await as(user,'get','/api/profile')).status,401);
+    assert.equal((await as(user,'post','/api/auth/continue',{reason:'continue'})).status,401,'expired sessions cannot be renewed');
     const cutoff=(await query('SELECT DATEADD(hour,-2,AppliedAt) AS At FROM dbo.SchemaVersions WHERE Version=13')).recordset[0].At;
     const historic=[];
     for(const [index,Event] of ['auth.login','request.edited','auth.logout'].entries())historic.push((await query('INSERT dbo.AuditEvents(ActorId,Event,Ip,CreatedAt,CorrelationId,Metadata) OUTPUT CONVERT(varchar(20),inserted.Id) AS Id VALUES(@user,@event,@ip,@at,@correlation,N\'{}\')',{user:p.id(actors.User.Id),event:p.str(Event),ip:p.str('192.0.2.9',64),at:p.date(new Date(cutoff.getTime()+index*60000)),correlation:p.id(randomUUID())})).recordset[0].Id);

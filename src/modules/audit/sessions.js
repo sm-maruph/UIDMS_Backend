@@ -1,4 +1,5 @@
 import {p} from '../../core/db.js';
+import {sessionLifetimeMinutes} from '../auth/session-window.js';
 
 const emitEnded=`INSERT dbo.AuditEvents(ActorId,Event,EntityId,Ip,CreatedAt,Metadata,AuditSessionId,ActorRole,CorrelationId)
  SELECT UserId,'auth.session_ended',CONVERT(nvarchar(80),Id),LastIp,EndedAt,
@@ -9,11 +10,11 @@ export async function finalizeAuditSessions(query,config,userId=null){
  OUTPUT inserted.Id,inserted.UserId,inserted.LastIp,inserted.EndedAt,inserted.EndReason,inserted.Role INTO @closed
  FROM dbo.AuditSessions a LEFT JOIN dbo.Sessions s ON s.AuditSessionId=a.Id JOIN dbo.Users u ON u.Id=a.UserId
  CROSS APPLY(SELECT TOP(1) candidate.At,candidate.Reason FROM(VALUES
-  (s.RevokedAt,'revoked'),(a.ExpiresAt,'expired'),(DATEADD(minute,COALESCE(a.IdleMinutes,@idle),a.LastSeenAt),'idle_timeout'),
+  (s.RevokedAt,'revoked'),(a.ExpiresAt,'expired'),(DATEADD(minute,@maximum,a.StartedAt),'expired'),(DATEADD(minute,COALESCE(a.IdleMinutes,@idle),a.LastSeenAt),'idle_timeout'),
   (CASE WHEN u.Active=0 THEN SYSUTCDATETIME() END,'account_disabled')
  ) candidate(At,Reason) WHERE candidate.At IS NOT NULL AND candidate.At<=SYSUTCDATETIME() ORDER BY candidate.At,candidate.Reason) ending
  WHERE a.EndedAt IS NULL AND (@user IS NULL OR a.UserId=@user);
- ${emitEnded}`,{idle:p.int(config.SESSION_IDLE_MINUTES),user:p.id(userId)});
+ ${emitEnded}`,{idle:p.int(config.SESSION_IDLE_MINUTES),maximum:p.int(sessionLifetimeMinutes(config)),user:p.id(userId)});
 }
 export async function closeAuditSessions(query,{userId=null,sessionId=null,reason='revoked',recordEvent=true}={}){
  await query(`DECLARE @closed TABLE(Id uniqueidentifier,UserId uniqueidentifier,LastIp varchar(64),EndedAt datetime2(3),EndReason varchar(40),Role nvarchar(40));

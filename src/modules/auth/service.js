@@ -1,3 +1,4 @@
+import {sessionWindow,sessionCsrf,sessionLifetimeMinutes} from './session-window.js';
 import {randomUUID} from 'node:crypto';
 import {finalizeAuditSessions,closeAuditSessions} from '../audit/sessions.js';
 import * as OTPAuth from 'otpauth';
@@ -17,31 +18,33 @@ export const publicUser=raw=>{const user=hydrateAuthority(raw);return {id:user.I
 export const userColumns="u.Id,u.EmployeeId,u.Name,u.Email,u.Role,u.BranchId,u.DepartmentId,u.DesignationId,u.Active,u.IsDemo,u.Version,CAST(CASE WHEN EXISTS(SELECT 1 FROM dbo.uidms_ManagedScopes(u.Id)) THEN 1 ELSE 0 END AS bit) AS CanApproveRequests,(SELECT COUNT(*) FROM dbo.OrganizationApprovers oa WHERE oa.UserId=u.Id) AS OwnedScopes,(SELECT Role FROM dbo.uidms_EffectiveRoles(u.Id) FOR JSON PATH) AS EffectiveRolesJson,(SELECT ScopeId,Role,Acting FROM dbo.uidms_ManagedScopes(u.Id) FOR JSON PATH) AS ManagedScopesJson";
 export function createAuth(db,config,{directory=createLdapDirectory(config)}={}){
  const cookieName=config.COOKIE_SECURE?'__Host-uidms':'uidms_dev';
- const cookieOptions={httpOnly:true,secure:config.COOKIE_SECURE,sameSite:'strict',path:'/',maxAge:config.SESSION_MAX_HOURS*3600000};
+ const cookieOptions={httpOnly:true,secure:config.COOKIE_SECURE,sameSite:'strict',path:'/',maxAge:sessionLifetimeMinutes(config)*60000};
  async function createSession(query,req,user,provider='local'){
   if(user.EffectiveRolesJson===undefined)user=(await query(`SELECT ${userColumns} FROM dbo.Users u WHERE u.Id=@id`,{id:p.id(user.Id)})).recordset[0]||user;
   user=hydrateAuthority(user);
-  const raw=token(),csrf=token(),auditSessionId=randomUUID();
+  const raw=token(),csrf=sessionCsrf(raw),auditSessionId=randomUUID();
   await finalizeAuditSessions(query,config,user.Id);
   await closeAuditSessions(query,{userId:user.Id,reason:'replaced'});
   await query('UPDATE dbo.Sessions SET RevokedAt=SYSUTCDATETIME() WHERE UserId=@user AND RevokedAt IS NULL',{user:p.id(user.Id)});
-  const sessionParams={audit:p.id(auditSessionId),user:p.id(user.Id),employee:p.text(user.EmployeeId,40),name:p.text(user.Name,160),role:p.text(user.Role,40),hours:p.int(config.SESSION_MAX_HOURS),idle:p.int(config.SESSION_IDLE_MINUTES),ip:p.str(req.ip,64),agent:p.text(String(req.get('user-agent')||'').slice(0,300),300),provider:p.str(provider,10)};
-  await query('INSERT dbo.AuditSessions(Id,UserId,EmployeeId,Name,Role,AuthProvider,ExpiresAt,IdleMinutes,Ip,LastIp,UserAgent) VALUES(@audit,@user,@employee,@name,@role,@provider,DATEADD(hour,@hours,SYSUTCDATETIME()),@idle,@ip,@ip,@agent)',sessionParams);
+  const sessionParams={audit:p.id(auditSessionId),user:p.id(user.Id),employee:p.text(user.EmployeeId,40),name:p.text(user.Name,160),role:p.text(user.Role,40),minutes:p.int(sessionLifetimeMinutes(config)),idle:p.int(config.SESSION_IDLE_MINUTES),ip:p.str(req.ip,64),agent:p.text(String(req.get('user-agent')||'').slice(0,300),300),provider:p.str(provider,10)};
+  const lifetime=await query('INSERT dbo.AuditSessions(Id,UserId,EmployeeId,Name,Role,AuthProvider,ExpiresAt,IdleMinutes,Ip,LastIp,UserAgent) OUTPUT inserted.StartedAt,inserted.LastSeenAt,inserted.ExpiresAt VALUES(@audit,@user,@employee,@name,@role,@provider,DATEADD(minute,@minutes,SYSUTCDATETIME()),@idle,@ip,@ip,@agent)',sessionParams);
   await query('INSERT dbo.Sessions(TokenHash,UserId,CsrfHash,CreatedAt,LastSeenAt,ExpiresAt,Ip,UserAgent,AuthProvider,AuditSessionId) SELECT @token,@user,@csrf,StartedAt,StartedAt,ExpiresAt,@ip,@agent,@provider,Id FROM dbo.AuditSessions WHERE Id=@audit',{...sessionParams,token:p.str(digest(raw),64),csrf:p.str(digest(csrf),64)});
   await audit(query,{...req,user,auditSessionId},'auth.login',user.Id,{provider,mfaPausedForTesting:mfaPausedForTesting(config)});
-  return {raw,csrf,user:publicUser(user),provider};
+  return {raw,csrf,user:publicUser(user),provider,session:sessionWindow(lifetime.recordset?.[0]||{},config)};
  }
- function sendSession(res,result){res.cookie(cookieName,result.raw,cookieOptions);res.json({user:result.user,csrfToken:result.csrf,provider:result.provider});}
+ function sendSession(res,result){res.cookie(cookieName,result.raw,cookieOptions);res.json({user:result.user,csrfToken:result.csrf,provider:result.provider,session:result.session});}
  async function authenticate(req,res,next){
   const raw=req.cookies?.[cookieName];
   requireCondition(typeof raw==='string'&&/^[\w-]{43}$/.test(raw),401,'UNAUTHENTICATED');
   const hash=digest(raw);
-  const result=await db.query(`UPDATE dbo.Sessions SET LastSeenAt=SYSUTCDATETIME() OUTPUT inserted.TokenHash WHERE TokenHash=@hash AND RevokedAt IS NULL AND ExpiresAt>SYSUTCDATETIME() AND LastSeenAt>DATEADD(minute,-@idle,SYSUTCDATETIME()); UPDATE a SET LastSeenAt=s.LastSeenAt,LastIp=@ip,IdleMinutes=@idle FROM dbo.AuditSessions a JOIN dbo.Sessions s ON s.AuditSessionId=a.Id JOIN dbo.Users u ON u.Id=s.UserId WHERE s.TokenHash=@hash AND s.RevokedAt IS NULL AND s.ExpiresAt>SYSUTCDATETIME() AND s.LastSeenAt>DATEADD(minute,-@idle,SYSUTCDATETIME()) AND u.Active=1 AND a.EndedAt IS NULL; SELECT ${userColumns},s.CsrfHash,s.AuthProvider,s.AuditSessionId,s.CreatedAt AS AuthenticatedAt FROM dbo.Sessions s JOIN dbo.Users u ON u.Id=s.UserId WHERE s.TokenHash=@hash AND u.Active=1 AND s.RevokedAt IS NULL AND s.ExpiresAt>SYSUTCDATETIME() AND s.LastSeenAt>DATEADD(minute,-@idle,SYSUTCDATETIME())`,{hash:p.str(hash,64),idle:p.int(config.SESSION_IDLE_MINUTES),ip:p.str(req.ip,64)});
+  const result=await db.query(`UPDATE dbo.Sessions SET LastSeenAt=CASE WHEN @touch=1 AND (@restore=1 OR CsrfHash=@csrf) THEN SYSUTCDATETIME() ELSE LastSeenAt END OUTPUT inserted.TokenHash WHERE TokenHash=@hash AND RevokedAt IS NULL AND ExpiresAt>SYSUTCDATETIME() AND LastSeenAt>DATEADD(minute,-@idle,SYSUTCDATETIME()); UPDATE a SET LastSeenAt=s.LastSeenAt,LastIp=@ip,IdleMinutes=@idle FROM dbo.AuditSessions a JOIN dbo.Sessions s ON s.AuditSessionId=a.Id JOIN dbo.Users u ON u.Id=s.UserId WHERE s.TokenHash=@hash AND s.RevokedAt IS NULL AND s.ExpiresAt>SYSUTCDATETIME() AND s.LastSeenAt>DATEADD(minute,-@idle,SYSUTCDATETIME()) AND u.Active=1 AND a.EndedAt IS NULL; SELECT ${userColumns},s.CsrfHash,s.AuthProvider,s.AuditSessionId,s.CreatedAt AS AuthenticatedAt,s.LastSeenAt AS SessionLastSeenAt,s.ExpiresAt AS SessionExpiresAt FROM dbo.Sessions s JOIN dbo.Users u ON u.Id=s.UserId WHERE s.TokenHash=@hash AND u.Active=1 AND s.RevokedAt IS NULL AND s.ExpiresAt>SYSUTCDATETIME() AND s.LastSeenAt>DATEADD(minute,-@idle,SYSUTCDATETIME())`,{hash:p.str(hash,64),idle:p.int(config.SESSION_IDLE_MINUTES),ip:p.str(req.ip,64),touch:p.bit(!['GET','HEAD','OPTIONS'].includes(req.method)||req.originalUrl?.split('?')[0]==='/api/auth/session'),restore:p.bit(req.method==='GET'&&req.originalUrl?.split('?')[0]==='/api/auth/session'),csrf:p.str(digest(String(req.get?.('x-csrf-token')||'')),64)});
   requireCondition(result.recordsets[0]?.length&&result.recordsets[1]?.length,401,'SESSION_EXPIRED');
   req.user=hydrateAuthority(result.recordsets[1][0]);req.sessionHash=hash;req.auditSessionId=req.user.AuditSessionId||null;
   requireCondition(providerEnabled(config,req.user.AuthProvider||'local'),401,'AUTH_PROVIDER_DISABLED');
   requireCondition(!req.user.IsDemo||mockLoginAllowed(config,req,req.user),401,'DEMO_LOGIN_DISABLED');
-  if(!['GET','HEAD','OPTIONS'].includes(req.method))requireCondition(equal(digest(String(req.get('x-csrf-token')||'')),req.user.CsrfHash),403,'CSRF_INVALID');
+  if(!['GET','HEAD','OPTIONS'].includes(req.method))requireCondition(equal(digest(String(req.get?.('x-csrf-token')||'')),req.user.CsrfHash),403,'CSRF_INVALID');
+  req.sessionWindow=sessionWindow(req.user,config);
+  requireCondition(Date.parse(req.sessionWindow.expiresAt)>Date.now(),401,'SESSION_EXPIRED');
   next();
  }
  async function challenge(query,user,provider='local'){

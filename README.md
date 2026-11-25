@@ -12,6 +12,7 @@ Start with the SSMS steps below. Further documentation:
 - [AD-only sign-in and existing database roles](docs/AD-SETUP.md)
 - [Department and branch approvers by system ID](docs/APPROVER-ASSIGNMENTS.md)
 - [Roles, Admin permissions and timed acting appointments](docs/ROLES-AND-ACTING.md)
+- [Dependency review and administrative deletion](docs/REVIEWED-DELETION.md)
 
 ## Requirements
 
@@ -50,6 +51,7 @@ Open each file from this backend's `sql` folder in SSMS. Review it, then execute
 | 14 | [014-organization-approvers.sql](sql/014-organization-approvers.sql) | Department/branch assignments by system ID and exact pending-step assignees; schema version 11. |
 | 15 | [015-roles-and-acting-assignments.sql](sql/015-roles-and-acting-assignments.sql) | Admin, timed acting appointments and live scoped/role authorization; schema version 12. |
 | 16 | [016-session-audit.sql](sql/016-session-audit.sql) | Durable session timelines, actor snapshots and IP tracking; schema version 13. |
+| 17 | [017-reviewed-deletion.sql](sql/017-reviewed-deletion.sql) | Reviewed removal of users/organizations with retained historical links; schema version 14. |
 
 The scripts use database name `CBC_UIDMS`. If you change that name, update the database references in the SQL scripts and set `DB_NAME` in your environment.
 
@@ -95,7 +97,7 @@ Check the connection and privilege boundary:
 npm.cmd run db:check
 ```
 
-Expected database `CBC_UIDMS`, schema version `13` after script 016, nonzero systems and request types, `IsDbOwner=0`, `IsSysadmin=0`, and no update or delete permission on audit events.
+Expected database `CBC_UIDMS`, schema version `14` after script 017, nonzero systems and request types, `IsDbOwner=0`, `IsSysadmin=0`, and no update or delete permission on audit events.
 
 The current deployment uses AD-only sign-in. After directory verification, the returned employee ID matches an existing SQL user and retains that user's role/access. Local passwords and mock login have been retired without deleting business records. Follow the [AD-only setup guide](docs/AD-SETUP.md).
 
@@ -229,6 +231,10 @@ The PM2 configuration does not replace the production TLS, secure-cookie, AD tra
 The implementation includes controls intended to support an OWASP ASVS review. It is **not a VAPT certificate or a guarantee of passing**. Review [SECURITY.md](docs/SECURITY.md) before deployment. Run the SQL lifecycle test against a separate test database and perform independent testing of the deployed frontend, API, SQL permissions, network and reverse proxy before putting real employee data into it.
 
 ## Audit session timelines
+
+The header shows the remaining session time between the theme switch and notifications. Sessions default to **30 minutes total**, with `SESSION_MAX_MINUTES=30` and `SESSION_IDLE_MINUTES=30`. Actual mouse/keyboard/scroll interaction sends a throttled heartbeat, while background reads do not extend idle time. Continuation may renew inactivity but cannot extend the total duration. The warning opens 60 seconds before expiry; at the total limit a fresh sign-in is required. Expired/revoked sessions show a sign-in dialog rather than a page panel or automatic redirect. `SESSION_MAX_MINUTES` takes precedence over the legacy hours setting. Restart `uidms-api` after changing the environment. Existing longer sessions are capped by the current total-duration policy. No additional SQL migration is needed for these timeout settings.
+
+Administrative deletion requires **at least 10 minutes remaining** in the effective session window. With a 30-minute total, it is normally available during the first 20 minutes. Other sensitive administration actions retain their separate recent-sign-in requirement.
 
 Apply [016-session-audit.sql](sql/016-session-audit.sql) to the hosting database in SSMS before restarting the updated API. Migration 015 must already be installed. No runtime login password change or rerun of script 004 is needed. Confirm `SELECT MAX(Version) FROM CBC_UIDMS.dbo.SchemaVersions;` returns **13**. Rebuild the frontend in the IIS physical-path project, restart `uidms-api`, then sign out and back in to begin a fully tracked session. The migration has been applied only to the local development database by this change.
 

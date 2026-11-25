@@ -7,7 +7,7 @@ export function readConfig(env=process.env){
   ALLOWED_ORIGINS:z.string().min(1),TRUST_PROXY:z.string().default('false'),
   DB_SERVER:z.string().min(1),DB_PORT:z.coerce.number().int().min(1).max(65535).default(1433),DB_NAME:z.string().default('CBC_UIDMS'),DB_USER:z.string().min(1),DB_PASSWORD:z.string().min(12),
   DB_ENCRYPT:bool.default(true),DB_TRUST_CERTIFICATE:bool.default(false),DATA_ENCRYPTION_KEY:z.string().refine(value=>/^[A-Za-z0-9+/]{43}=$/.test(value)&&Buffer.from(value,'base64').length===32,'Expected a 32-byte base64 key'),
-  SESSION_IDLE_MINUTES:z.coerce.number().int().min(5).max(30).default(15),SESSION_MAX_HOURS:z.coerce.number().int().min(1).max(12).default(8),
+  SESSION_IDLE_MINUTES:z.coerce.number().int().min(5).max(30).default(30),SESSION_MAX_MINUTES:z.coerce.number().int().min(15).max(720).default(30),SESSION_MAX_HOURS:z.coerce.number().int().min(1).max(12).default(8),
   COOKIE_SECURE:bool.default(true),MFA_REQUIRED:bool.default(true),MOCK_LOGIN_ENABLED:bool.default(false),
   AUTH_MODE:z.enum(['local','hybrid','ad']).default('local'),LDAP_ENABLED:bool.optional(),
   LDAP_HOST:z.string().trim().max(253).default(''),LDAP_PORT:z.coerce.number().int().min(1).max(65535).default(389),

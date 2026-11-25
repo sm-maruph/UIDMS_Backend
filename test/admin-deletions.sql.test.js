@@ -1,0 +1,50 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {randomUUID,randomBytes} from 'node:crypto';
+import {readConfig} from '../src/config.js';import {createDatabase,p} from '../src/core/db.js';
+import {deletionPlan,performDeletion} from '../src/modules/admin/deletions.js';
+
+test('SQL reviewed removal keeps or removes owned requests, preserves history, moves employees and blocks stale/unsafe cascades',{skip:process.env.UIDMS_SQL_DELETE_SMOKE!=='true',timeout:45000},async()=>{
+ const config=readConfig();assert.equal(config.NODE_ENV,'development');assert.ok(['localhost','127.0.0.1','::1'].includes(config.DB_SERVER));
+ const db=createDatabase(config),rollback=new Error('Reviewed deletion fixture rollback'),suffix=randomBytes(5).toString('hex');
+ try{await db.connect();await assert.rejects(db.transaction(async query=>{
+  const scoped={query,transaction:work=>work(query)},lookups={};
+  for(const [key,kind] of [['branch','branch'],['replacement','branch'],['department','department'],['designation','designation']])lookups[key]=(await query('INSERT dbo.Lookups(Kind,Name) OUTPUT inserted.Id VALUES(@kind,@name)',{kind:p.str(kind,20),name:p.text('Delete fixture '+key+' '+suffix,150)})).recordset[0].Id;
+  const createUser=async(name,role='User')=>(await query('INSERT dbo.Users(EmployeeId,Name,Role,BranchId,DepartmentId,DesignationId) OUTPUT inserted.* VALUES(@employee,@name,@role,@branch,@department,@designation)',{employee:p.text('DL_'+suffix+'_'+name,40),name:p.text('Delete fixture '+name,160),role:p.text(role,40),branch:p.id(lookups.branch),department:p.id(lookups.department),designation:p.id(lookups.designation)})).recordset[0];
+  const admin=await createUser('admin','Super Admin'),a=await createUser('keep'),b=await createUser('remove'),reviewer=await createUser('reviewer','CITO');
+  const req={user:admin,id:randomUUID(),ip:'127.0.0.1'};
+  const createRequest=async owner=>(await query("INSERT dbo.Requests(TicketNumber,TypeCode,RequesterId,BranchId,DepartmentId,Justification,Details,RequesterSnapshot,SubmittedIp) OUTPUT inserted.Id VALUES(@ticket,'reset',@owner,@branch,@department,N'',N'{}',N'{}','127.0.0.1')",{ticket:p.text('DL-'+randomBytes(8).toString('hex'),40),owner:p.id(owner.Id),branch:p.id(lookups.branch),department:p.id(lookups.department)})).recordset[0].Id;
+  const aRequest=await createRequest(a),bRequest=await createRequest(b);
+  const sessionId=(await query("INSERT dbo.AuditSessions(UserId,EmployeeId,Name,Role,AuthProvider,ExpiresAt,Ip,LastIp) OUTPUT inserted.Id VALUES(@user,@employee,@name,'User','ad',DATEADD(hour,1,SYSUTCDATETIME()),'127.0.0.1','127.0.0.1')",{user:p.id(a.Id),employee:p.text(a.EmployeeId,40),name:p.text(a.Name,160)})).recordset[0].Id;
+  const sessionHash=randomBytes(32).toString('hex');await query("INSERT dbo.Sessions(TokenHash,UserId,CsrfHash,ExpiresAt,Ip,AuthProvider,AuditSessionId) VALUES(@hash,@user,@hash,DATEADD(hour,1,SYSUTCDATETIME()),'127.0.0.1','ad',@session)",{hash:p.str(sessionHash,64),user:p.id(a.Id),session:p.id(sessionId)});
+  const delivery=(await query("INSERT dbo.CredentialDeliveries(RequestId,RecipientId,Ciphertext,ExpiresAt) OUTPUT inserted.Id VALUES(@request,@user,N'fixture-only',DATEADD(hour,1,SYSUTCDATETIME()))",{request:p.id(aRequest),user:p.id(a.Id)})).recordset[0].Id;
+  const system=(await query('SELECT TOP(1) Id FROM dbo.Systems WHERE Active=1 ORDER BY Id')).recordset[0].Id;
+  const grant=(await query('INSERT dbo.AccessGrants(UserId,SystemId,SourceRequestId) OUTPUT inserted.Id VALUES(@user,@system,@request)',{user:p.id(admin.Id),system:p.id(system),request:p.id(aRequest)})).recordset[0].Id;
+  const execute=async(kind,id,overrides={})=>{const plan=await deletionPlan(query,kind,id);return performDeletion(scoped,req,kind,id,{reviewToken:plan.reviewToken,confirmName:plan.target.Name,employees:'move',requests:'keep',deleteOtherRequests:false,replacementId:null,...overrides});};
+  let plan=await deletionPlan(query,'user',a.Id);assert.ok(plan.requests.some(row=>row.Id===aRequest&&row.CreatedByUser));assert.equal(JSON.stringify(plan).includes('PasswordHash'),false);
+  await query('UPDATE dbo.Requests SET UpdatedAt=SYSUTCDATETIME() WHERE Id=@id',{id:p.id(aRequest)});
+  await assert.rejects(performDeletion(scoped,req,'user',a.Id,{reviewToken:plan.reviewToken,confirmName:plan.target.Name,requests:'keep'}),error=>error.code==='DELETE_DEPENDENCIES_CHANGED');
+  await execute('user',a.Id);assert.equal((await query('SELECT Active FROM dbo.Users WHERE Id=@id',{id:p.id(a.Id)})).recordset[0].Active,false);assert.equal((await query('SELECT DeletedAt FROM dbo.Requests WHERE Id=@id',{id:p.id(aRequest)})).recordset[0].DeletedAt,null);
+  assert.ok((await query('SELECT RevokedAt FROM dbo.Sessions WHERE TokenHash=@hash',{hash:p.str(sessionHash,64)})).recordset[0].RevokedAt);
+  assert.equal((await query('SELECT EndReason FROM dbo.AuditSessions WHERE Id=@id',{id:p.id(sessionId)})).recordset[0].EndReason,'account_deleted');
+  assert.equal((await query('SELECT Ciphertext FROM dbo.CredentialDeliveries WHERE Id=@id',{id:p.id(delivery)})).recordset[0].Ciphertext,null);
+  await execute('user',b.Id,{requests:'delete'});assert.ok((await query('SELECT DeletedAt FROM dbo.Requests WHERE Id=@id',{id:p.id(bRequest)})).recordset[0].DeletedAt);
+  await assert.rejects(execute('user',admin.Id),error=>error.code==='SELF_DELETION_FORBIDDEN');
+  await assert.rejects(execute('branch',lookups.branch,{employees:'delete',requests:'delete'}),error=>error.code==='SELF_DELETION_FORBIDDEN');
+  const reviewerRequest=await createRequest(admin);await query("INSERT dbo.RequestSteps(RequestId,Position,Role,AssignedUserId) VALUES(@request,1,'CITO',@user)",{request:p.id(reviewerRequest),user:p.id(reviewer.Id)});
+  plan=await deletionPlan(query,'user',reviewer.Id);assert.ok(plan.requests.some(row=>row.Id===reviewerRequest&&row.UserDependency));
+  await assert.rejects(execute('user',reviewer.Id),error=>error.code==='DELETE_LIVE_DEPENDENCIES');
+  await execute('user',reviewer.Id,{deleteOtherRequests:true});assert.ok((await query('SELECT DeletedAt FROM dbo.Requests WHERE Id=@id',{id:p.id(reviewerRequest)})).recordset[0].DeletedAt);
+  const managerRequest=await createRequest(admin);await query("INSERT dbo.RequestSteps(RequestId,Position,Role,BranchId) VALUES(@request,1,'Branch manager',@branch)",{request:p.id(managerRequest),branch:p.id(lookups.branch)});
+  await assert.rejects(execute('branch',lookups.branch,{replacementId:lookups.replacement}),error=>error.code==='DELETE_LIVE_DEPENDENCIES');
+  await execute('request',managerRequest);
+  await assert.rejects(execute('branch',lookups.branch),error=>error.code==='DELETE_REPLACEMENT_REQUIRED');
+  await execute('branch',lookups.branch,{replacementId:lookups.replacement});
+  assert.equal((await query('SELECT BranchId FROM dbo.Users WHERE Id=@id',{id:p.id(admin.Id)})).recordset[0].BranchId,lookups.replacement);
+  assert.ok((await query('SELECT DeletedAt FROM dbo.Lookups WHERE Id=@id',{id:p.id(lookups.branch)})).recordset[0].DeletedAt);
+  assert.equal((await query('SELECT BranchId FROM dbo.Requests WHERE Id=@id',{id:p.id(aRequest)})).recordset[0].BranchId,lookups.branch,'historical request scope remains intact');
+  await execute('request',aRequest);assert.ok((await query('SELECT DeletedAt FROM dbo.Requests WHERE Id=@id',{id:p.id(aRequest)})).recordset[0].DeletedAt);
+  assert.equal((await query('SELECT RevokedAt FROM dbo.AccessGrants WHERE Id=@id',{id:p.id(grant)})).recordset[0].RevokedAt,null,'request deletion must not silently revoke fulfilled access');
+  await execute('designation',lookups.designation,{employees:'move',replacementId:(await query("INSERT dbo.Lookups(Kind,Name) OUTPUT inserted.Id VALUES('designation',@name)",{name:p.text('Replacement designation '+suffix,150)})).recordset[0].Id});
+  assert.ok((await query("SELECT COUNT(*) AS Total FROM dbo.AuditEvents WHERE ActorId=@id AND Event IN ('user.deleted','lookup.deleted','request.deleted')",{id:p.id(admin.Id)})).recordset[0].Total>=6);
+  throw rollback;
+ }),error=>error===rollback);}finally{await db.close();}
+});

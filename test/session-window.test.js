@@ -1,0 +1,9 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {sessionWindow,sessionCsrf} from '../src/modules/auth/session-window.js';
+test('session window respects both idle and absolute expiry without extending original sign-in',()=>{const config={SESSION_IDLE_MINUTES:15,SESSION_MAX_HOURS:8},now=new Date('2026-11-24T12:00:00Z');const user={AuthenticatedAt:new Date('2026-11-24T04:05:00Z'),SessionLastSeenAt:now,SessionExpiresAt:new Date('2026-11-24T12:05:00Z')};assert.equal(sessionWindow(user,config,now).expiresAt,'2026-11-24T12:05:00.000Z');assert.equal(sessionWindow(user,config,now).idleExpiresAt,'2026-11-24T12:15:00.000Z');assert.equal(user.AuthenticatedAt.toISOString(),'2026-11-24T04:05:00.000Z');assert.equal(sessionWindow({SessionLastSeenAt:new Date('2026-11-24T11:55:00Z'),SessionExpiresAt:new Date('2026-11-24T20:00:00Z')},config,now).expiresAt,'2026-11-24T12:10:00.000Z');});
+test('CSRF tokens are stable for the same high-entropy session and differ between sessions',()=>{assert.match(sessionCsrf('a'.repeat(43)),/^[\w-]{43}$/);assert.equal(sessionCsrf('a'.repeat(43)),sessionCsrf('a'.repeat(43)));assert.notEqual(sessionCsrf('a'.repeat(43)),sessionCsrf('b'.repeat(43)));});
+
+test('thirty-minute total limit caps old longer sessions and cannot be extended by activity',()=>{
+ const config={SESSION_IDLE_MINUTES:30,SESSION_MAX_MINUTES:30},now=new Date('2026-11-25T12:15:00Z'),user={AuthenticatedAt:new Date('2026-11-25T12:00:00Z'),SessionLastSeenAt:now,SessionExpiresAt:new Date('2026-11-25T20:00:00Z')};
+ const window=sessionWindow(user,config,now);assert.equal(window.absoluteExpiresAt,'2026-11-25T12:30:00.000Z');assert.equal(window.expiresAt,window.absoluteExpiresAt);assert.equal(window.idleTimeoutSeconds,1800);
+ const later=sessionWindow({...user,SessionLastSeenAt:new Date('2026-11-25T12:25:00Z')},config,new Date('2026-11-25T12:25:00Z'));assert.equal(later.expiresAt,window.expiresAt);
+});

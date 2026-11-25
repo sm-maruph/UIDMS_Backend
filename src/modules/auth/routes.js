@@ -1,3 +1,4 @@
+import {sessionCsrf} from './session-window.js';
 import {Router} from 'express';
 import {z,text,parse} from '../../core/validation.js';
 import {p} from '../../core/db.js';
@@ -33,11 +34,15 @@ export function authRoutes(db,auth,config){
  router.post('/mfa/verify',validate(challengeSchema.extend({code:z.string().regex(/^\d{6}$/)})),auth.verifyMfa);
  router.post('/onboarding/options',validate(z.object({onboardingToken:enrollmentTokenSchema}).strict()),auth.onboardingOptions);
  router.post('/onboarding/complete',validate(enrollmentProfileSchema),auth.completeOnboarding);
- router.use(auth.authenticate);
  router.get('/session',async(req,res)=>{
-  const csrf=token();await db.query('UPDATE dbo.Sessions SET CsrfHash=@csrf WHERE TokenHash=@hash',{csrf:p.str(digest(csrf),64),hash:p.str(req.sessionHash,64)});
-  res.json({user:publicUser(req.user),csrfToken:csrf,provider:req.user.AuthProvider||'local'});
+  try{await auth.authenticate(req,res,error=>{if(error)throw error;});}
+  catch(error){if(['UNAUTHENTICATED','SESSION_EXPIRED'].includes(error.code)&&error.status===401)return res.json({authenticated:false});throw error;}
+  const csrf=sessionCsrf(req.cookies[auth.cookieName]);await db.query('UPDATE dbo.Sessions SET CsrfHash=@csrf WHERE TokenHash=@hash',{csrf:p.str(digest(csrf),64),hash:p.str(req.sessionHash,64)});
+  res.json({authenticated:true,user:publicUser(req.user),csrfToken:csrf,provider:req.user.AuthProvider||'local',session:req.sessionWindow});
  });
+ router.use(auth.authenticate);
+ router.get('/status',(req,res)=>res.json({authenticated:true,session:req.sessionWindow}));
+ router.post('/continue',async(req,res)=>{const body=parse(z.object({reason:z.enum(['activity','continue']).default('continue')}).strict(),req.body);if(body.reason==='continue')await audit(db.query,req,'auth.session_continued',req.user.Id);res.json({authenticated:true,session:req.sessionWindow});});
  router.post('/logout',async(req,res)=>{await db.transaction(async query=>{await closeAuditSessions(query,{sessionId:req.auditSessionId,reason:'logout',recordEvent:false});await query('UPDATE dbo.Sessions SET RevokedAt=SYSUTCDATETIME() WHERE TokenHash=@hash',{hash:p.str(req.sessionHash,64)});await audit(query,req,'auth.logout',req.user.Id);});res.clearCookie(auth.cookieName,{...auth.cookieOptions,maxAge:undefined});res.status(204).end();});
  router.post('/password',validate(z.object({currentPassword:z.string().max(128),newPassword:passwordSchema}).strict()),async(req,res)=>{
   requireCondition(localLoginEnabled(config),403,'LOCAL_LOGIN_DISABLED','UIDMS uses Active Directory. Change your password through your organization’s AD password service.');
