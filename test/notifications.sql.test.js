@@ -1,5 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {randomBytes} from 'node:crypto';import express from 'express';import request from 'supertest';
 import {readConfig} from '../src/config.js';import {createDatabase,p} from '../src/core/db.js';import {notifyAttention} from '../src/modules/notifications/attention.js';import {notificationRoutes} from '../src/modules/notifications/routes.js';import {errorHandler} from '../src/core/errors.js';
+import {deliverNotificationBatch} from '../src/modules/mail/notification-worker.js';
 
 test('SQL notification routing, acting cover, archive, pagination and user isolation',{skip:process.env.UIDMS_SQL_NOTIFICATIONS_SMOKE!=='true',timeout:60000},async()=>{
  const config=readConfig();assert.equal(config.NODE_ENV,'development');assert.ok(['localhost','127.0.0.1','::1'].includes(config.DB_SERVER));
@@ -11,7 +12,15 @@ test('SQL notification routing, acting cover, archive, pagination and user isola
   const ticket=(await query("INSERT dbo.Requests(TicketNumber,TypeCode,RequesterId,BranchId,DepartmentId,Status,CurrentPosition,Justification,Details,RequesterSnapshot,SubmittedIp) OUTPUT inserted.Id VALUES(@ticket,'reset',@user,@branch,@department,'Pending',1,N'Notification test',N'{}',N'{}','127.0.0.1')",{ticket:p.text('NT-'+suffix,40),user:p.id(actors.owner.Id),branch:p.id(lookup.branch),department:p.id(lookup.department)})).recordset[0].Id;
   await query("INSERT dbo.RequestSteps(RequestId,Position,Role,BranchId,AssignedUserId) VALUES(@id,1,'Branch manager',@branch,@manager),(@id,2,'CITO',NULL,@cito)",{id:p.id(ticket),branch:p.id(lookup.branch),manager:p.id(actors.manager.Id),cito:p.id(actors.cito.Id)});
   const notifications=async user=>(await query('SELECT * FROM dbo.Notifications WHERE UserId=@user AND RequestId=@id ORDER BY Id',{user:p.id(user.Id),id:p.id(ticket)})).recordset;
+  await query('UPDATE dbo.Users SET Email=@email WHERE Id=@id',{id:p.id(actors.manager.Id),email:p.text('fixture-manager@combankbd.com',254)});
   await notifyAttention(query,ticket);assert.match((await notifications(actors.manager))[0].Message,/recommendation required/);assert.equal((await notifications(actors.cito)).length,0);assert.equal((await notifications(actors.owner)).length,0);
+  const queued=(await query("SELECT Body FROM dbo.EmailOutbox WHERE JSON_VALUE(CASE WHEN ISJSON(Body)=1 THEN Body ELSE N'{}' END,'$.requestId')=CONVERT(nvarchar(36),@id)",{id:p.id(ticket)})).recordset;
+  assert.equal(queued.length,1);const email=JSON.parse(queued[0].Body);assert.equal(email.format,'uidms-notification-v1');assert.equal(email.recipientUserId.toLowerCase(),actors.manager.Id);assert.equal(email.requesterName,actors.owner.Name);assert.match(email.action,/recommendation required/);
+  // Execute the real lease/update SQL inside this rollback transaction. Gmail is
+  // mocked; the extra fixture predicate prevents claiming unrelated queued mail.
+  const sent=[];const workerDb={query,transaction:work=>work((sql,params={})=>query(sql.replace('ORDER BY Id)',"AND JSON_VALUE(CASE WHEN ISJSON(Body)=1 THEN Body ELSE N'{}' END,'$.requestId')=CONVERT(nvarchar(36),@fixture) ORDER BY Id)"),{...params,fixture:p.id(ticket)}))};
+  const delivered=await deliverNotificationBatch(workerDb,{...config,GMAIL_NOTIFICATIONS_ENABLED:true},{status:async()=>({configured:true,connected:true,testedAt:new Date().toISOString()}),send:async mail=>{sent.push(mail);return {messageId:'fixture-only-no-network'};}},{limit:1,log:()=>{}});
+  assert.equal(delivered,1);assert.deepEqual(sent[0].to,['fixture-manager@combankbd.com']);assert.match(sent[0].html,/Requester name/);assert.match(sent[0].html,/recommendation required/);
   await query("INSERT dbo.RoleDelegations(PrincipalId,ActingUserId,Role,ScopeId,StartsAt,EndsAt,CreatedBy) VALUES(@manager,@acting,'Branch manager',@scope,DATEADD(hour,-1,SYSUTCDATETIME()),DATEADD(hour,1,SYSUTCDATETIME()),@manager)",{manager:p.id(actors.manager.Id),acting:p.id(actors.acting.Id),scope:p.id(lookup.branch)});
   await notifyAttention(query,ticket);assert.equal((await notifications(actors.manager)).length,1);assert.equal((await notifications(actors.acting)).length,1,'only the acting manager is currently eligible');
   await query("UPDATE dbo.RequestSteps SET Status='Approved' WHERE RequestId=@id AND Position=1; UPDATE dbo.Requests SET Status='In review',CurrentPosition=2 WHERE Id=@id",{id:p.id(ticket)});

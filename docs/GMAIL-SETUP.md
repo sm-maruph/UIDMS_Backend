@@ -1,8 +1,8 @@
 # Gmail API: first authorization and test
 
-The integration is deliberately in connection-test mode. Automated ticket email
-triggers and the existing SMTP/outbox worker have not been changed. A real Google
-authorization and accepted test email must be verified before that next stage.
+Complete Google authorization and verify the first test email using this guide.
+Automated ticket notification delivery is now available separately through the
+persistent Gmail worker; see [Gmail notifications](GMAIL-NOTIFICATIONS.md).
 
 ## Development PC
 
@@ -141,10 +141,9 @@ gmail.test_started/accepted/failed. Repeating an accepted test ID returns its
 stored result instead of sending again. A timeout or crash leaves the attempt
 pending/unknown and it is not retried automatically; check the recipient mailbox
 before deliberately starting a new test. Gmail does not guarantee exactly-once
-delivery from a Message-ID alone. Automatic notification queues/retries/reminders
-will be connected only after the real first test is confirmed. Existing queued
-SMTP messages must be reviewed before any later Gmail worker is enabled, to
-avoid accidentally sending historical test notifications.
+delivery from a Message-ID alone. After the real first test is confirmed, enable the Gmail notification worker
+as described in GMAIL-NOTIFICATIONS.md. Legacy SMTP backlog is excluded from
+Gmail delivery to avoid sending historical test notifications.
 
 Official references:
 - https://developers.google.com/identity/protocols/oauth2/web-server
@@ -166,3 +165,7 @@ The backend terminal emits `gmail.setup.configuration`,
 ID and working directory; no client secret, token, cookie or authorization link
 is logged. A disabled authorization button is explained in the status diagnostics.
 `older-backend` means the frontend reached an API without the new diagnostics.
+
+## Automated request notifications
+
+After the first test is received, follow [Gmail notification delivery](GMAIL-NOTIFICATIONS.md) to enable and run the persistent worker.
