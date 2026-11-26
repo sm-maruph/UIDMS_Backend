@@ -1,3 +1,4 @@
+import {notifyAttention} from '../notifications/attention.js';
 import {routingNameSql} from '../directory/organization-names.js';
 import {p} from '../../core/db.js';
 import {z} from '../../core/validation.js';
@@ -70,6 +71,7 @@ async function updateOpenRequests(query,req,code){
   await query('UPDATE dbo.Requests SET Status=@status,CurrentPosition=@position,UpdatedAt=SYSUTCDATETIME() WHERE Id=@id',{...params,status:p.str(status,30),position:p.int(position)});
   if(ticket.Status==='Query')await query('UPDATE dbo.Queries SET ReturnStatus=@status WHERE RequestId=@id AND ResolvedAt IS NULL',{...params,status:p.str(returnStatus,30)});
   if(status==='Approved')await createEmailDrafts(query,ticket);
+  await notifyAttention(query,ticket.Id);
   await audit(query,req,'request.workflow_updated',ticket.Id,{previous:existing.map(step=>({role:step.Role,status:step.Status,position:step.Position})),roles:[...completed,...pending].map(step=>step.Role),status});
  }
  return tickets.length;

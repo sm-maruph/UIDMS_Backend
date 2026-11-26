@@ -17,6 +17,8 @@ export function readConfig(env=process.env){
   LDAP_DIRECTORY_ID:z.string().regex(/^[a-z0-9_-]{1,40}$/).default('primary-ad'),LDAP_NETBIOS_DOMAIN:z.string().regex(/^[A-Za-z0-9_-]{0,30}$/).default(''),
   LDAP_UPN_SUFFIX:z.string().trim().max(253).default(''),LDAP_EMPLOYEE_ID_ATTRIBUTE:z.enum(['sAMAccountName','employeeID','employeeNumber']).default('sAMAccountName'),
   LDAP_ALLOW_INSECURE_LOCAL:bool.default(false),
+  GOOGLE_CLIENT_ID:z.string().trim().max(300).default(''),GOOGLE_CLIENT_SECRET:z.string().max(1024).default(''),GOOGLE_REDIRECT_URI:z.string().max(1000).default(''),
+  GMAIL_SETUP_ENABLED:bool.default(false),GMAIL_SENDER_EMAIL:z.email().default('itbangladesh@combankbd.com'),GMAIL_SENDER_NAME:z.string().min(1).max(150).refine(value=>!/[\r\n\0]/.test(value)).default('User ID Management System (UIDMS), Bangladesh'),GMAIL_TEST_TO:z.string().max(254).default(''),MAIL_PORTAL_URL:z.string().default('https://uidms.combankbd.com'),
   SMTP_HOST:z.string().default(''),SMTP_PORT:z.coerce.number().int().default(587),SMTP_SECURE:bool.default(false),SMTP_USER:z.string().default(''),SMTP_PASSWORD:z.string().default(''),MAIL_FROM:z.email().default('uidms@combankbd.com'),MAIL_ALLOWED_DOMAINS:z.string().default('combankbd.com')
  });
  const result=schema.safeParse(env);

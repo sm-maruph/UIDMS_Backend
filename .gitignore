@@ -9,3 +9,6 @@ coverage/
 *.pem
 *.key
 tmp/
+
+# Encrypted OAuth tokens and one-time setup material (never publish or commit).
+private/

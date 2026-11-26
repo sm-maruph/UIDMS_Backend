@@ -23,3 +23,13 @@ $env:UIDMS_SQL_DOCUMENT_SMOKE='true'
 node --env-file=.env --test test/request-document.sql.test.js
 Remove-Item Env:UIDMS_SQL_DOCUMENT_SMOKE
 ```
+
+
+Designation fields use professional job titles, independently of UIDMS roles.
+A valid submitted job title is preserved; designation IDs are resolved through
+lookups, with the employee directory as a fallback for old role-valued records.
+Super Admin/Admin/User permission labels are not used as job designations.
+If no job title is available, the document says "Not recorded". Assign the real
+title in Edit profile or User directory; this does not change the employee's
+portal permissions. Requester and beneficiary designation columns are included
+in both the printed HTML and downloadable PDF. No database migration is needed.

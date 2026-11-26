@@ -1,3 +1,5 @@
+import {currentTransferAccess} from './transfer-access.js';
+import {notifyAttention} from '../notifications/attention.js';
 import {routingNameSql} from '../directory/organization-names.js';
 import {randomUUID} from 'node:crypto';
 import {p} from '../../core/db.js';
@@ -65,9 +67,11 @@ export async function createTicket(db,req,body){return db.transaction(async quer
  requireCondition(!retiredRequestType(body.typeCode),400,'REQUEST_TYPE_RETIRED','This older request type is no longer used for new submissions. Refresh the portal and choose the current request form.');
  const plan=await validateCreation(query,body,req.user);
  const id=randomUUID();
+ let savedDetails=body.details;
+ if(plan.subject){const inventory=await currentTransferAccess(query,plan.subject.Id);savedDetails={...body.details,transferChange:{...body.details.transferChange,stage:'employee',employee:{...body.details.transferChange?.employee,employeeId:plan.subject.EmployeeId,name:plan.subject.Name}},transferAccess:{version:1,current:inventory.rows,inventoryVersion:inventory.inventoryVersion,employeeConfirmed:false,itReview:null}};}
  const sequence=(await query('SELECT NEXT VALUE FOR dbo.TicketSequence AS Value')).recordset[0].Value;
  const ticketNumber=`UID-${new Date().getUTCFullYear()}-${String(sequence).padStart(7,'0')}`;
- await query(`INSERT dbo.Requests(Id,TicketNumber,TypeCode,RequesterId,SubjectUserId,BranchId,DepartmentId,DestinationBranchId,DestinationDepartmentId,Status,Justification,Details,RequesterSnapshot,SubmittedIp) VALUES(@id,@number,@type,@requester,@subject,@branch,@department,@toBranch,@toDepartment,@status,@justification,@details,@snapshot,@ip)`,{id:p.id(id),number:p.text(ticketNumber,40),type:p.str(body.typeCode,50),requester:p.id(req.user.Id),subject:p.id(plan.subject?.Id),branch:p.id(body.branchId),department:p.id(body.departmentId),toBranch:p.id(body.destinationBranchId),toDepartment:p.id(body.destinationDepartmentId),status:p.str(plan.subject?'Employee review':'Pending',30),justification:p.text(body.justification),details:p.json(body.details),snapshot:p.json(publicUser(req.user)),ip:p.str(req.ip,64)});
+ await query(`INSERT dbo.Requests(Id,TicketNumber,TypeCode,RequesterId,SubjectUserId,BranchId,DepartmentId,DestinationBranchId,DestinationDepartmentId,Status,Justification,Details,RequesterSnapshot,SubmittedIp) VALUES(@id,@number,@type,@requester,@subject,@branch,@department,@toBranch,@toDepartment,@status,@justification,@details,@snapshot,@ip)`,{id:p.id(id),number:p.text(ticketNumber,40),type:p.str(body.typeCode,50),requester:p.id(req.user.Id),subject:p.id(plan.subject?.Id),branch:p.id(body.branchId),department:p.id(body.departmentId),toBranch:p.id(body.destinationBranchId),toDepartment:p.id(body.destinationDepartmentId),status:p.str(plan.subject?'Employee review':'Pending',30),justification:p.text(body.justification),details:p.json(savedDetails),snapshot:p.json(publicUser(req.user)),ip:p.str(req.ip,64)});
  await query('UPDATE dbo.Requests SET SignatureSnapshot=(SELECT Signature FROM dbo.Users WHERE Id=@user) WHERE Id=@id',{user:p.id(req.user.Id),id:p.id(id)});
  for(const person of plan.people.values()){
   const personId=randomUUID();
@@ -76,7 +80,7 @@ export async function createTicket(db,req,body){return db.transaction(async quer
  }
  for(const step of plan.flow){const role=step.Role==='Manager'?plan.manager:step.Role;await query('INSERT dbo.RequestSteps(RequestId,Position,Role,BranchId,DepartmentId,AssignedUserId) VALUES(@request,@position,@role,@branch,@department,@assignee)',{request:p.id(id),position:p.int(step.Position),role:p.text(role,40),assignee:p.id(step.Role==='Manager'?plan.managerUserId:null),branch:p.id(role==='Branch manager'?plan.targetBranch:null),department:p.id(role==='Department head'?plan.targetDepartment:null)});}
  await audit(query,req,'request.created',id,{ticketNumber,typeCode:body.typeCode});
- if(plan.subject)await notify(query,plan.subject.Id,id,`${ticketNumber}: employee access review required.`);
+ await notifyAttention(query,id);
  return {id,ticketNumber};
 });}
 export async function listTickets(db,user,filter){
@@ -109,11 +113,14 @@ export async function replaceTicket(db,req,id,body){return db.transaction(async 
  }
  for(const step of plan.flow){const role=step.Role==='Manager'?plan.manager:step.Role;await query('INSERT dbo.RequestSteps(RequestId,Position,Role,BranchId,DepartmentId,AssignedUserId) VALUES(@request,@position,@role,@branch,@department,@assignee)',{request:p.id(id),position:p.int(step.Position),role:p.text(role,40),assignee:p.id(step.Role==='Manager'?plan.managerUserId:null),branch:p.id(role==='Branch manager'?plan.targetBranch:null),department:p.id(role==='Department head'?plan.targetDepartment:null)});}
  await query('UPDATE dbo.Requests SET BranchId=@branch,DepartmentId=@department,DestinationBranchId=@toBranch,DestinationDepartmentId=@toDepartment,Status=@status,CurrentPosition=1,Justification=@justification,Details=@details,ConsentAt=SYSUTCDATETIME(),SignatureSnapshot=(SELECT Signature FROM dbo.Users WHERE Id=@actor),UpdatedAt=SYSUTCDATETIME() WHERE Id=@id',{branch:p.id(body.branchId),department:p.id(body.departmentId),toBranch:p.id(body.destinationBranchId),toDepartment:p.id(body.destinationDepartmentId),status:p.str(plan.subject?'Employee review':'Pending',30),justification:p.text(body.justification),details:p.json(body.details),actor:p.id(req.user.Id),id:p.id(id)});
+ if(plan.subject){const inventory=await currentTransferAccess(query,plan.subject.Id);await query('UPDATE dbo.Requests SET Details=@details WHERE Id=@id',{id:p.id(id),details:p.json({...body.details,transferChange:{...body.details.transferChange,stage:'employee',employee:{...body.details.transferChange?.employee,employeeId:plan.subject.EmployeeId,name:plan.subject.Name}},transferAccess:{version:1,current:inventory.rows,inventoryVersion:inventory.inventoryVersion,employeeConfirmed:false,itReview:null}})});}
  await audit(query,req,'request.replaced',id);
+ await notifyAttention(query,id);
 });}
 export async function decide(db,req,id,body){return db.transaction(async query=>{
  const ticket=await loadTicket(query,id,req.user,{lock:true});assertVersion(ticket,body.version);
  const step=await currentStep(query,ticket);assertReview(ticket,step,req.user);
+ if(ticket.TypeCode==='movement'&&step.Role==='IT'&&body.decision==='approve')requireCondition(JSON.parse(ticket.Details).transferAccess?.itReview,409,'TRANSFER_IT_REVIEW_REQUIRED','Review and save the destination access before recommending this transfer.');
  if(step.Role==='HR'&&ticket.TypeCode==='new-user'&&body.decision==='approve'){
   const invalid=(await query("SELECT COUNT(*) AS Count FROM dbo.RequestPeople p LEFT JOIN dbo.HrClearances h ON h.PersonId=p.Id WHERE p.RequestId=@id AND (h.PersonId IS NULL OR h.Police='Pending' OR h.ReferenceCheck<>'Both checked')",{id:p.id(id)})).recordset[0].Count;
   requireCondition(!invalid,409,'HR_CLEARANCE_INCOMPLETE');
@@ -126,5 +133,6 @@ export async function decide(db,req,id,body){return db.transaction(async query=>
  if(status==='Approved')await createEmailDrafts(query,ticket);
  await audit(query,req,`request.${body.decision}`,id,{position:ticket.CurrentPosition,role:step.Role,decisionLabel});
  await notify(query,ticket.RequesterId,id,`${ticket.TicketNumber}: ${decisionLabel}.`);
+ await notifyAttention(query,id);
  return {status,decisionLabel};
 });}

@@ -1,3 +1,5 @@
+import {currentTransferAccess,transferCatalogue,transferReview,saveEmployeeTransferAccess,saveItTransferAccess} from './transfer-access.js';
+import {notifyAttention} from '../notifications/attention.js';
 import {Router} from 'express';
 import {p} from '../../core/db.js';
 import {parse,z,text,uuidParam,id,formJson} from '../../core/validation.js';
@@ -35,6 +37,7 @@ export function requestRoutes(db){
   await db.transaction(async query=>{
    const ticket=await loadTicket(query,requestId,req.user,{lock:true});assertVersion(ticket,body.version);
    validateJustification(ticket.TypeCode,body.justification);
+   requireCondition(ticket.TypeCode!=='movement',403,'REQUEST_NOT_EDITABLE','Use the transfer review process to change destination access.');
    requireCondition(ticket.RequesterId===req.user.Id&&ticket.Status==='Pending',403,'REQUEST_NOT_EDITABLE');
    const approved=(await query("SELECT 1 AS Found FROM dbo.RequestSteps WHERE RequestId=@id AND Status<>'Waiting' UNION ALL SELECT 1 FROM dbo.Queries WHERE RequestId=@id",{id:p.id(requestId)})).recordset.length;
    requireCondition(!approved,409,'REVIEW_ALREADY_STARTED');
@@ -64,18 +67,29 @@ export function requestRoutes(db){
    await query('UPDATE dbo.Requests SET UpdatedAt=SYSUTCDATETIME() WHERE Id=@id',{id:p.id(requestId)});await audit(query,req,'hr.clearance_updated',requestId,{checks:body.checks});
   });res.status(204).end();
  });
+ const transferItems=z.array(z.object({systemId:id,systemRoleId:id.nullable().optional(),reason:text(2000)}).strict()).max(300);
+ router.get('/:id/transfer-access',async(req,res)=>{
+  const ticket=await loadTicket(db.query,uuidParam(req),req.user);requireCondition(ticket.TypeCode==='movement',400,'TRANSFER_ONLY');
+  const inventory=await currentTransferAccess(db.query,ticket.SubjectUserId),catalogue=await transferCatalogue(db.query);
+  res.json({current:inventory.rows,inventoryVersion:inventory.inventoryVersion,systems:catalogue,review:await transferReview(db.query,ticket,inventory)});
+ });
  router.post('/:id/employee-review',async(req,res)=>{
-  const requestId=uuidParam(req);const body=parse(z.object({version,justification:text(4000),details:formJson,items:z.array(z.object({systemId:id,systemRoleId:id.nullable().optional(),reason:text(2000)}).strict()).min(1).max(100)}).strict(),req.body);
+  const requestId=uuidParam(req),body=parse(z.object({version,justification:text(4000),details:formJson.optional(),items:transferItems,confirmedCurrentAccess:z.literal(true),inventoryVersion:z.string().regex(/^[a-f0-9]{64}$/)}).strict(),req.body);
   await db.transaction(async query=>{
    const ticket=await loadTicket(query,requestId,req.user,{lock:true});assertVersion(ticket,body.version);
    requireCondition(ticket.TypeCode==='movement'&&ticket.Status==='Employee review'&&ticket.SubjectUserId===req.user.Id,403,'EMPLOYEE_REVIEW_FORBIDDEN');
-   const systems=(await query('SELECT s.Id,sr.Id AS RoleId FROM dbo.Systems s LEFT JOIN dbo.SystemRoles sr ON sr.SystemId=s.Id AND sr.Active=1 WHERE s.Active=1 AND s.TransferManaged=1')).recordset;
-   requireCondition(new Set(body.items.map(item=>`${item.systemId}:${item.systemRoleId||''}`)).size===body.items.length,400,'DUPLICATE_REQUEST_ITEM');
-   requireCondition(body.items.every(item=>systems.some(system=>system.Id===item.systemId&&(!item.systemRoleId||system.RoleId===item.systemRoleId))),400,'INVALID_SYSTEM_ROLE');
-   const person=(await query('SELECT Id FROM dbo.RequestPeople WHERE RequestId=@id',{id:p.id(requestId)})).recordset[0];
-   await query('DELETE dbo.RequestItems WHERE RequestId=@id; INSERT dbo.RequestRevisions(RequestId,ActorId,Snapshot) VALUES(@id,@actor,@snapshot)',{id:p.id(requestId),actor:p.id(req.user.Id),snapshot:p.json({details:JSON.parse(ticket.Details),justification:ticket.Justification})});
-   for(const item of body.items)await query("INSERT dbo.RequestItems(RequestId,PersonId,SystemId,SystemRoleId,Operation,Reason) VALUES(@request,@person,@system,@role,'update',@reason)",{request:p.id(requestId),person:p.id(person.Id),system:p.id(item.systemId),role:p.id(item.systemRoleId),reason:p.text(item.reason,2000)});
-   await query("UPDATE dbo.Requests SET Status='Pending',Justification=@justification,Details=@details,UpdatedAt=SYSUTCDATETIME() WHERE Id=@id",{justification:p.text(body.justification),details:p.json(body.details),id:p.id(requestId)});await audit(query,req,'movement.employee_reviewed',requestId);
+   const details=await saveEmployeeTransferAccess(query,req,ticket,body);
+   await query("UPDATE dbo.Requests SET Status='Pending',Justification=@justification,Details=@details,UpdatedAt=SYSUTCDATETIME() WHERE Id=@id",{justification:p.text(body.justification),details:p.json(details),id:p.id(requestId)});
+   await audit(query,req,'movement.employee_reviewed',requestId);await notifyAttention(query,requestId);
+  });res.status(204).end();
+ });
+ router.post('/:id/it-access-review',async(req,res)=>{
+  const requestId=uuidParam(req),body=parse(z.object({version,items:transferItems,notes:text(2000,10)}).strict(),req.body);
+  await db.transaction(async query=>{
+   const ticket=await loadTicket(query,requestId,req.user,{lock:true});assertVersion(ticket,body.version);
+   requireCondition(ticket.TypeCode==='movement'&&hasRole(req.user,'IT'),403,'IT_REVIEW_ONLY');
+   const step=await currentStep(query,ticket);assertReview(ticket,step,req.user);requireCondition(step.Role==='IT',403,'IT_REVIEW_ONLY');
+   await saveItTransferAccess(query,req,ticket,body);
   });res.status(204).end();
  });
  return router;

@@ -1,6 +1,6 @@
+import {notificationRoutes} from '../notifications/routes.js';
 import {Router} from 'express';
 import {p} from '../../core/db.js';
-import {parse,pageSchema,uuidParam,z,text} from '../../core/validation.js';
 import {actorParams,visibility} from '../requests/policy.js';
 
 export function dashboardRoutes(db){
@@ -23,12 +23,6 @@ export function dashboardRoutes(db){
    SELECT COUNT(DISTINCT q.RequestId) AS response FROM dbo.Queries q JOIN dbo.Requests r ON r.Id=q.RequestId WHERE q.AuthorId=@actor AND r.DeletedAt IS NULL`,actorParams(req.user));
   res.json({...result.recordsets[0][0],...result.recordsets[1][0],...result.recordsets[2][0]});
  });
- router.get('/notifications',async(req,res)=>{
-  const page=parse(pageSchema.strict(),req.query);const result=await db.query('SELECT COUNT(*) AS Total FROM dbo.Notifications WHERE UserId=@user AND (RequestId IS NULL OR EXISTS(SELECT 1 FROM dbo.Requests r WHERE r.Id=RequestId AND r.DeletedAt IS NULL)); SELECT Id,RequestId,Message,CreatedAt,ReadAt FROM dbo.Notifications WHERE UserId=@user AND (RequestId IS NULL OR EXISTS(SELECT 1 FROM dbo.Requests r WHERE r.Id=RequestId AND r.DeletedAt IS NULL)) ORDER BY CreatedAt DESC,Id DESC OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY',{user:p.id(req.user.Id),offset:p.int((page.page-1)*page.pageSize),size:p.int(page.pageSize)});res.json({items:result.recordsets[1],total:result.recordsets[0][0].Total,...page});
- });
- router.post('/notifications/:id/read',async(req,res)=>{
-  const notification=parse(z.string().regex(/^\d{1,18}$/),req.params.id);
-  await db.query('UPDATE dbo.Notifications SET ReadAt=COALESCE(ReadAt,SYSUTCDATETIME()) WHERE Id=@id AND UserId=@user',{id:{type:(await import('../../core/db.js')).sql.BigInt,value:notification},user:p.id(req.user.Id)});res.status(204).end();
- });
+ router.use(notificationRoutes(db));
  return router;
 }

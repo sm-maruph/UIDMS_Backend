@@ -36,8 +36,8 @@ export function documentPdf(report){return new Promise((resolve,reject)=>{
   doc.font('Body').fontSize(8).fillColor(muted).text(instruction,48,headerTop+66+titleHeight+5,{width:width-24});
   doc.x=36;doc.y=headerTop+headerHeight+14;
   table(['Ticket','Status','Request time (Dhaka)'],[[report.ticket,report.status,documentTime(report.requester.at)]],[1,1,2]);
-  table(['Requester','Employee ID','Branch','Department'],[[report.requester.name,report.requester.employeeId,report.requester.branch,report.requester.department]],[2,1,2,2]);
-  heading('Employees / beneficiaries');table(['Name','Employee ID'],report.people.map(row=>[row.name,row.employeeId]),[2,1]);
+  table(['Requester','Employee ID','Designation','Branch','Department'],[[report.requester.name,report.requester.employeeId,report.requester.designation,report.requester.branch,report.requester.department]],[2,1,1.5,2,2]);
+  heading('Employees / beneficiaries');table(['Name','Employee ID','Designation'],report.people.map(row=>[row.name,row.employeeId,row.designation||'Not recorded']),[2,1,2]);
   heading('Requested systems and roles');table(['System','Role','Operation','Reason'],report.items.map(row=>[row.system,row.role,row.operation,row.reason]),[2,2,1,3]);
   if(report.justification){heading('Business justification / Remarks');paragraph(report.justification);}
   if(report.fields.length){heading('Submitted request details');table(['Field','Value'],report.fields.map(row=>[row.label,row.value]),[2,5]);}

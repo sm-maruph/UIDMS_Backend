@@ -1,4 +1,6 @@
+import {assertTransferReviewed} from '../requests/transfer-access.js';
 import {p} from '../../core/db.js';
+import {requireCondition} from '../../core/errors.js';
 import {text,z} from '../../core/validation.js';
 import {categoryForType,emailServices} from './email-services.js';
 import {applyProcessingCc} from './email-recipients.js';
@@ -66,13 +68,13 @@ export function groupEmailDrafts(ticket,items){
   const recipients=template.TemplateId?JSON.parse(template.Recipients):{to:[],cc:[]};
   const subject=render(template.Subject||'[{{ticketNumber}}] {{requestType}} - IT processing').replace(/[\r\n\t]+/g,' ').trim();
   const body=render(template.Body||'Dear Team,\n\nPlease process the following approved identity service request.\n\nTicket: {{ticketNumber}}\n{{items}}\n\nBusiness justification: {{justification}}\n\nPlease confirm completion to IT. Use the approved secure channel for credentials.\n\nRegards,\nInformation Technology Department');
-  return {templateId:template.TemplateId,content:applyProcessingCc({...recipients,subject,body,name:template.TemplateName||'General processing',systems:[...new Set(rows.map(row=>row.system))]},ticket)};
+  return {templateId:template.TemplateId,content:applyProcessingCc({...recipients,subject,body,name:template.TemplateName||'General processing',systems:[...new Set(rows.map(row=>row.system))],systemIds:[...new Set(items.map(item=>item.SystemId).filter(Boolean))]},ticket)};
  });
 }
 
 export async function readEmailDrafts(query,requestId,ticket){
  const result=await query(`SELECT d.Id,d.Content,d.SentAt,u.Name AS SentBy FROM dbo.RequestEmailDrafts d
- LEFT JOIN dbo.Users u ON u.Id=d.SentBy WHERE d.RequestId=@request ORDER BY d.Position`,{request:p.id(requestId)});
+ LEFT JOIN dbo.Users u ON u.Id=d.SentBy WHERE d.RequestId=@request AND COALESCE(JSON_VALUE(d.Content,'$.superseded'),'false')<>'true' ORDER BY d.Position`,{request:p.id(requestId)});
  return result.recordset.map(row=>{
   const content=JSON.parse(row.Content);
   return {id:row.Id,...(row.SentAt?content:applyProcessingCc(content,ticket)),sentAt:row.SentAt,sentBy:row.SentBy};
@@ -80,7 +82,7 @@ export async function readEmailDrafts(query,requestId,ticket){
 }
 
 // The caller holds the request lock so approval and legacy draft initialization serialize.
-export async function createEmailDrafts(query,ticket){
+async function matchingEmailItems(query,ticket){
  const items=(await query(`SELECT rp.Name,rp.EmployeeId,rp.Details AS PersonDetails,b.Name AS Branch,d.Name AS Department,
   i.SystemId,s.Name AS SystemName,sr.Name AS RoleName,i.Operation,i.Reason,
   t.Id AS TemplateId,t.Name AS TemplateName,t.Recipients,t.Subject,t.Body
@@ -91,11 +93,39 @@ export async function createEmailDrafts(query,ticket){
    SELECT TOP (1) candidate.Id,candidate.Name,candidate.Recipients,candidate.Subject,candidate.Body
    FROM dbo.SystemEmailTemplates candidate
    LEFT JOIN dbo.SystemEmailTemplateSystems member ON member.Category=candidate.Category AND member.TemplateId=candidate.Id AND member.SystemId=i.SystemId
-   WHERE candidate.Category=@category AND (member.SystemId IS NOT NULL OR candidate.IsServiceDefault=1)
-   ORDER BY candidate.IsServiceDefault,candidate.Id
+   WHERE (candidate.Category=@category OR candidate.Category='') AND (member.SystemId IS NOT NULL OR candidate.IsServiceDefault=1)
+   ORDER BY CASE WHEN member.SystemId IS NOT NULL THEN 0 ELSE 1 END,CASE WHEN candidate.Category=@category THEN 0 ELSE 1 END,candidate.Id
   ) t
   WHERE i.RequestId=@request ORDER BY t.Name,rp.EmployeeId,s.Name,sr.Name,i.Id`,{request:p.id(ticket.Id),category:p.str(categoryForType(ticket.TypeCode),32)})).recordset;
- for(const [index,draft] of groupEmailDrafts(ticket,items).entries()){
-  await query('INSERT dbo.RequestEmailDrafts(RequestId,TemplateId,Position,Content) VALUES(@request,@template,@position,@content)',{request:p.id(ticket.Id),template:p.id(draft.templateId),position:p.int(index+1),content:p.json(draft.content)});
+ return items;
+}
+
+async function appendDrafts(query,ticket,drafts){
+ const position=(await query('SELECT COALESCE(MAX(Position),0) AS Position FROM dbo.RequestEmailDrafts WHERE RequestId=@request',{request:p.id(ticket.Id)})).recordset[0]?.Position||0;
+ for(const [index,draft] of drafts.entries()){
+  await query('INSERT dbo.RequestEmailDrafts(RequestId,TemplateId,Position,Content) VALUES(@request,@template,@position,@content)',{request:p.id(ticket.Id),template:p.id(draft.templateId),position:p.int(position+index+1),content:p.json(draft.content)});
  }
+}
+
+
+export async function createEmailDrafts(query,ticket){
+ assertTransferReviewed(ticket);
+ const existing=await readEmailDrafts(query,ticket.Id,ticket);
+ if(existing.length)return;
+ await appendDrafts(query,ticket,groupEmailDrafts(ticket,await matchingEmailItems(query,ticket)));
+}
+
+// Explicitly requested under the request lock. Keep sent snapshots byte-for-byte;
+// retire unsent snapshots instead of deleting history or granting DELETE rights.
+export async function rebuildEmailDrafts(query,ticket){
+ const existing=await readEmailDrafts(query,ticket.Id,ticket);
+ const sent=existing.filter(draft=>draft.sentAt);
+ requireCondition(sent.every(draft=>draft.systemIds?.length||draft.systems?.length),409,'SENT_DRAFT_COVERAGE_UNKNOWN','A historical sent email has no system coverage. Review it with IT before rebuilding drafts.');
+ const coveredIds=new Set(sent.flatMap(draft=>draft.systemIds||[]).map(value=>value.toLowerCase()));
+ const coveredNames=new Set(sent.filter(draft=>!draft.systemIds?.length).flatMap(draft=>draft.systems||[]));
+ const items=(await matchingEmailItems(query,ticket)).filter(item=>!coveredIds.has(item.SystemId.toLowerCase())&&!coveredNames.has(item.SystemName));
+ const drafts=groupEmailDrafts(ticket,items);
+ await query("UPDATE dbo.RequestEmailDrafts SET Content=JSON_MODIFY(Content,'$.superseded',CAST(1 AS bit)) WHERE RequestId=@request AND SentAt IS NULL AND COALESCE(JSON_VALUE(Content,'$.superseded'),'false')<>'true'",{request:p.id(ticket.Id)});
+ await appendDrafts(query,ticket,drafts);
+ return {preservedSent:sent.length,rebuilt:drafts.length};
 }

@@ -1,3 +1,5 @@
+import {createGmail} from './modules/mail/gmail.js';
+import {googleRoutes} from './modules/mail/google-routes.js';
 import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
@@ -23,7 +25,7 @@ import {SqlRateLimitStore} from './core/rate-limit-store.js';
 import {authRateLimitOptions,rateLimitResponse} from './core/auth-rate-limit.js';
 import {clientAddress} from './core/client-address.js';
 
-export function createApp({db,config,directory}){
+export function createApp({db,config,directory,gmail}){
  const app=express();app.disable('x-powered-by');app.set('query parser','simple');
  app.set('trust proxy',config.TRUST_PROXY==='false'?false:config.TRUST_PROXY.split(',').map(value=>value.trim()));
  app.use((req,res,next)=>{req.id=randomUUID();res.set('X-Request-ID',req.id);res.set('Cache-Control','no-store');next();});
@@ -43,6 +45,8 @@ export function createApp({db,config,directory}){
  app.use((req,res,next)=>{if(!['GET','HEAD','OPTIONS'].includes(req.method)&&!req.is('application/json'))return next(new HttpError(415,'JSON_REQUIRED'));next();});
  app.use(express.json({limit:'512kb',strict:true}));
  const auth=createAuth(db,config,{directory});
+ const googleMail=googleRoutes(db,config,gmail||createGmail(config));
+ app.use(googleMail.browser);
  app.get('/health/live',(req,res)=>res.json({status:'ok'}));
  app.get('/health/db',async(req,res)=>{
   try{
@@ -53,7 +57,7 @@ export function createApp({db,config,directory}){
   return res.json({status:'ok',database:'connected'});
  });
  app.use('/api/auth',authRoutes(db,auth,config));
- const api=express.Router();api.use(auth.authenticate);
+ const api=express.Router();api.use(auth.authenticate);api.use(googleMail.admin);
  api.use(directoryRoutes(db,config));api.use(approverRoutes(db));api.use(delegationRoutes(db));api.use('/requests',requestRoutes(db));api.use('/queries',queryRoutes(db));api.use(fulfilmentRoutes(db,config));api.use(emailTemplateRoutes(db));api.use(attachmentRoutes(db));api.use(dashboardRoutes(db));api.use(auditRoutes(db,config));api.use('/admin',adminRoutes(db,config));
  app.use('/api',api);
  app.use((req,res,next)=>next(new HttpError(404,'NOT_FOUND')));

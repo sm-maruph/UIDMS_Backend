@@ -70,3 +70,14 @@ test('CC header injection is rejected before any draft is updated',async()=>{
  const response=await request(app).post(`/requests/${requestId}/email-drafts/${actorId}/sent`).send({confirmedSent:true,email:{...content,cc:['safe@combankbd.com\r\nBcc: attacker@example.com']}});
  assert.equal(response.status,400);assert.equal(calls.length,0);
 });
+
+test('only processing roles can rebuild drafts, and a request version is required',async()=>{
+ for(const role of ['User','HR','CITO','COO','Branch manager','Department head']){
+  const {app,calls}=fixture(role);
+  assert.equal((await request(app).post(`/requests/${requestId}/email-drafts/rebuild`).send({version:'0000000000000001'})).status,403);
+  assert.equal(calls.length,0);
+ }
+ const {app,calls}=fixture();
+ assert.equal((await request(app).post(`/requests/${requestId}/email-drafts/rebuild`).send({})).status,400);
+ assert.equal(calls.length,0);
+});

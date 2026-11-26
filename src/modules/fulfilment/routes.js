@@ -1,3 +1,4 @@
+import {currentTransferAccess,applyTransferAccess,assertTransferReviewed} from '../requests/transfer-access.js';
 import {Router} from 'express';
 import {p} from '../../core/db.js';
 import {z,id,text,parse,uuidParam} from '../../core/validation.js';
@@ -8,7 +9,7 @@ import {assertVersion} from '../requests/policy.js';
 import {version} from '../requests/schemas.js';
 import {roles,recentAuth} from '../auth/service.js';
 import {audit,notify} from '../audit/service.js';
-import {createEmailDrafts,readEmailDrafts,processingEmailFields} from './system-email.js';
+import {createEmailDrafts,rebuildEmailDrafts,readEmailDrafts,processingEmailFields} from './system-email.js';
 import {applyProcessingCc} from './email-recipients.js';
 import {newUserCustodian} from './custodian.js';
 
@@ -17,7 +18,7 @@ const sentDraft=z.object({confirmedSent:z.literal(true),email:processingEmailFie
 
 async function requireEmailDraftsSent(query,requestId){
  const {recordset}=await query(`SELECT TOP (1) Id FROM dbo.RequestEmailDrafts
-  WHERE RequestId=@id AND SentAt IS NULL AND EXISTS(SELECT 1 FROM dbo.RequestEmailDrafts WHERE RequestId=@id AND TemplateId IS NOT NULL)`,{id:p.id(requestId)});
+  WHERE RequestId=@id AND SentAt IS NULL AND COALESCE(JSON_VALUE(Content,'$.superseded'),'false')<>'true' AND EXISTS(SELECT 1 FROM dbo.RequestEmailDrafts WHERE RequestId=@id AND TemplateId IS NOT NULL AND COALESCE(JSON_VALUE(Content,'$.superseded'),'false')<>'true')`,{id:p.id(requestId)});
  requireCondition(!recordset.length,409,'EMAIL_DRAFTS_PENDING','Confirm each processing email was sent before continuing.');
 }
 
@@ -34,7 +35,7 @@ export function fulfilmentRoutes(db,config){
   const requestId=uuidParam(req);
   const items=await db.transaction(async query=>{
    const ticket=await loadTicket(query,requestId,req.user,{lock:true});
-   requireCondition(ticket.Status==='Approved',409,'FINAL_APPROVAL_REQUIRED');
+   requireCondition(processingStates.includes(ticket.Status),409,'FINAL_APPROVAL_REQUIRED');
    requireCondition(ticket.RequesterId!==req.user.Id&&ticket.SubjectUserId!==req.user.Id,403,'SEPARATION_OF_DUTIES');
    const drafts=await readEmailDrafts(query,requestId,ticket);
    if(drafts.length)return drafts;
@@ -42,6 +43,18 @@ export function fulfilmentRoutes(db,config){
    return readEmailDrafts(query,requestId,ticket);
   });
   res.json({items});
+ });
+ router.post('/requests/:id/email-drafts/rebuild',roles('IT','Admin','Super Admin'),async(req,res)=>{
+  const requestId=uuidParam(req),body=parse(z.object({version}).strict(),req.body);
+  const result=await db.transaction(async query=>{
+   const ticket=await loadTicket(query,requestId,req.user,{lock:true});assertVersion(ticket,body.version);
+   requireCondition(processingStates.includes(ticket.Status),409,'FINAL_APPROVAL_REQUIRED');
+   requireCondition(ticket.RequesterId!==req.user.Id&&ticket.SubjectUserId!==req.user.Id,403,'SEPARATION_OF_DUTIES');
+   const result=await rebuildEmailDrafts(query,ticket);
+   await query('UPDATE dbo.Requests SET UpdatedAt=SYSUTCDATETIME() WHERE Id=@id',{id:p.id(requestId)});
+   await audit(query,req,'fulfilment.drafts_rebuilt',requestId,result);
+   return {...result,items:await readEmailDrafts(query,requestId,ticket)};
+  });res.json(result);
  });
  router.post('/requests/:id/email-drafts/:draftId/sent',roles('IT','Admin','Super Admin'),async(req,res)=>{
   const requestId=uuidParam(req),draftId=uuidParam(req,'draftId'),body=parse(sentDraft,req.body);
@@ -52,6 +65,7 @@ export function fulfilmentRoutes(db,config){
    const params={request:p.id(requestId),draft:p.id(draftId)};
    const row=(await query('SELECT Content,SentAt FROM dbo.RequestEmailDrafts WHERE Id=@draft AND RequestId=@request',params)).recordset[0];
    requireCondition(row,404,'DRAFT_NOT_FOUND');
+   requireCondition(JSON.parse(row.Content).superseded!==true,409,'DRAFT_SUPERSEDED','This draft was replaced. Reload the current processing drafts.');
    if(row.SentAt)return;
    const content=applyProcessingCc({...JSON.parse(row.Content),...body.email},ticket);
    parse(processingEmailFields,content);
@@ -77,9 +91,13 @@ export function fulfilmentRoutes(db,config){
    const ticket=await loadTicket(query,requestId,req.user,{lock:true});assertVersion(ticket,body.version);requireCondition(processingStates.includes(ticket.Status),409,'NOT_READY_FOR_COMPLETION');requireCondition(ticket.RequesterId!==req.user.Id&&ticket.SubjectUserId!==req.user.Id,403,'SEPARATION_OF_DUTIES');
    await requireEmailDraftsSent(query,requestId);
    const items=(await query('SELECT i.*,rp.UserId,rp.EmployeeId,rp.Name,rp.BranchId,rp.DepartmentId FROM dbo.RequestItems i JOIN dbo.RequestPeople rp ON rp.Id=i.PersonId WHERE i.RequestId=@id',{id:p.id(requestId)})).recordset;
+   assertTransferReviewed(ticket);
+   const transferReview=ticket.TypeCode==='movement'?JSON.parse(ticket.Details).transferAccess:null;
+   if(transferReview?.version===1){const inventory=await currentTransferAccess(query,ticket.SubjectUserId);requireCondition(inventory.inventoryVersion===transferReview.inventoryVersion,409,'TRANSFER_ACCESS_CHANGED','The employee access changed after review. Ask IT to reconcile the transfer before completion.');}
+   const credentialItems=items.filter(item=>item.Operation!=='revoke'&&(!transferReview||!transferReview.current.some(old=>old.systemId===item.SystemId&&(old.systemRoleId||null)===(item.SystemRoleId||null))));
    const needsCredentials=!['employee-deactivate','system-deactivate','mailing-group','auto-forward'].includes(ticket.TypeCode);
-   if(needsCredentials)requireCondition(items.every(item=>body.credentials.some(credential=>credential.employeeId===item.EmployeeId&&credential.systemId===item.SystemId)),400,'CREDENTIALS_INCOMPLETE');
-   requireCondition(body.credentials.every(credential=>items.some(item=>item.EmployeeId===credential.employeeId&&item.SystemId===credential.systemId)),400,'UNREQUESTED_CREDENTIAL');
+   if(needsCredentials)requireCondition(credentialItems.every(item=>body.credentials.some(credential=>credential.employeeId===item.EmployeeId&&credential.systemId===item.SystemId)),400,'CREDENTIALS_INCOMPLETE');
+   requireCondition(body.credentials.every(credential=>credentialItems.some(item=>item.EmployeeId===credential.employeeId&&item.SystemId===credential.systemId)),400,'UNREQUESTED_CREDENTIAL');
    for(const item of items){
     if(!item.UserId){
      const beneficiary=(await query('SELECT Id,Name,BranchId,DepartmentId FROM dbo.Users WHERE EmployeeId=@employee AND Active=1',{employee:p.text(item.EmployeeId,40)})).recordset[0];
@@ -97,12 +115,14 @@ export function fulfilmentRoutes(db,config){
      const user=(await query('SELECT Role FROM dbo.Users WITH(UPDLOCK,HOLDLOCK) WHERE Id=@id',{id:p.id(userId)})).recordset[0];requireCondition(!['Admin','Platform Admin','Super Admin'].includes(user.Role),403,'ADMIN_DEACTIVATION_REQUIRES_ADMIN');
      await query('UPDATE dbo.AccessGrants SET RevokedAt=SYSUTCDATETIME() WHERE UserId=@id AND RevokedAt IS NULL; UPDATE dbo.Users SET Active=0,UpdatedAt=SYSUTCDATETIME() WHERE Id=@id; UPDATE dbo.Sessions SET RevokedAt=SYSUTCDATETIME() WHERE UserId=@id',{id:p.id(userId)});
     }
+   }else if(transferReview?.version===1){
+    await applyTransferAccess(query,ticket,transferReview,body.credentials);
    }else{
     const updated=new Set();
     for(const item of items){
      if(item.Operation==='reset')continue;
      const group=`${item.UserId}:${item.SystemId}`;
-     if(ticket.TypeCode==='movement'&&!updated.has(`movement:${item.UserId}`)){
+     if(ticket.TypeCode==='movement'&&!transferReview&&!updated.has(`movement:${item.UserId}`)){
       // Replace transferable systems while preserving email/AD and unrelated services.
       await query('UPDATE g SET RevokedAt=SYSUTCDATETIME() FROM dbo.AccessGrants g JOIN dbo.Systems s ON s.Id=g.SystemId WHERE g.UserId=@user AND s.TransferManaged=1 AND g.RevokedAt IS NULL',{user:p.id(item.UserId)});updated.add(`movement:${item.UserId}`);
      }

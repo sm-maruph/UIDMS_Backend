@@ -1,3 +1,4 @@
+import {documentDesignations} from './document-designation.js';
 import {currentRequestTypes} from './catalog.js';
 import {bankLogoData,uidmsLogoData,formTitle,formInstruction} from './document-branding.js';
 
@@ -23,13 +24,13 @@ export function requestDocument(detail,actor,now=new Date()){
   let it=approvals.find(item=>item.role==='IT');if(!it){it={role:'IT / Processing',entries:[]};const index=approvals.findIndex(item=>['CITO','COO'].includes(item.role));if(index===-1)approvals.push(it);else approvals.splice(index,0,it);}
   it.entries.push({name:fulfilment.ActorName,at:fulfilment.CompletedAt||fulfilment.ProcessingAt,status:fulfilment.CompletedAt?'Completed processing':'Processing'});
  }
- const original=detail.details?.submittedForm?.data||detail.details||{};
+ const {designation,people,original}=documentDesignations(detail);
  const serviceFields=fields(original);
  fields((detail.hrClearance||[]).map(row=>({employee:detail.people?.find(person=>person.id===row.PersonId)?.name||row.PersonId,police:row.Police,referenceCheck:row.ReferenceCheck,recommendation:row.Recommendation,updatedAt:documentTime(row.UpdatedAt)})),'HR clearance',serviceFields);
  if(fulfilment)fields({reference:fulfilment.ProcessingReference,notes:fulfilment.Notes},'Processing',serviceFields);
  return {ticket:detail.ticketNumber,title:detail.typeCode==='new-user'?'New AD request':currentRequestTypes[detail.typeCode]||detail.action,status:detail.state,requiresJustification:detail.typeCode!=='reset',
-  requester:{name:detail.name,employeeId:detail.requesterId,branch:detail.branch,department:detail.department,at:detail.createdAt},justification:detail.justification,
-  people:detail.people||[],items:detail.items||[],fields:serviceFields,approvals,
+  requester:{name:detail.name,employeeId:detail.requesterId,branch:detail.branch,department:detail.department,designation:designation||'Not recorded',at:detail.createdAt},justification:detail.justification,
+  people,items:detail.items||[],fields:serviceFields,approvals,
   decisions:steps.filter(step=>step.status!=='Waiting').map(step=>({role:step.role,...entries(step)})),
   queries:(detail.queries||[]).map(row=>({by:row.by,to:row.recipient,message:row.message,at:row.at,response:row.response,responseAt:row.responseAt})),
   attachments:(detail.attachments||[]).map(row=>({name:row.OriginalName,status:row.ScanStatus,at:row.CreatedAt})),
@@ -42,8 +43,8 @@ export function documentHtml(report){
  *{box-sizing:border-box}body{font:12px Arial,sans-serif;color:#152e47;background:#fff;margin:0;padding:24px}main{max-width:1050px;margin:auto}.form-header{border:1px solid #cdddf3;border-radius:6px;padding:12px;margin-bottom:18px;break-inside:avoid}.form-brand-row{display:grid;grid-template-columns:140px minmax(0,1fr) 140px;align-items:center;gap:16px;border-bottom:1px solid #cdddf3;padding:0 0 10px;margin-bottom:10px;min-height:45px}.form-brand-row img{display:block;width:125px;height:40px;object-fit:contain}.form-brand-row .bank-logo{justify-self:end}.bank-heading{text-align:center;color:#122e4b;font-size:18px;font-weight:700;line-height:1.3}.bank-heading small{display:block;font-size:11px;font-weight:400;color:#627388;margin-top:4px}.form-header h1{font-size:15px;line-height:1.4;color:#163a5d;margin:0 0 5px}.form-instruction{font-size:11px;color:#627388;margin:0;line-height:1.5}h2{font-size:13px;margin-top:20px;padding-bottom:6px;border-bottom:1px solid #cbd6e2}p{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6}.meta{display:grid;grid-template-columns:repeat(2,1fr);gap:8px 20px}.meta strong{display:inline-block;min-width:100px}table{width:100%;border-collapse:collapse;margin:10px 0;table-layout:fixed}th,td{text-align:left;border:1px solid #cbd6e2;padding:7px;overflow-wrap:anywhere;white-space:pre-wrap;vertical-align:top}th{background:#eef3fa;color:#2859a6}thead{display:table-header-group}tr{break-inside:avoid}.signoffs{display:grid;grid-template-columns:repeat(${report.approvals.length},minmax(0,1fr));gap:14px;margin:30px 0;break-inside:avoid}.signoff{padding-top:8px;border-top:1px solid #526a83;font-size:10px;overflow-wrap:anywhere}.signoff strong{display:block;font-size:11px;margin-bottom:8px}.signoff p{margin:5px 0}.muted{font-size:10px;color:#627388}footer{border-top:1px solid #cbd6e2;margin-top:24px;padding-top:10px;font-size:10px;color:#627388}@page{size:A4 landscape;margin:14mm}@media print{body{padding:0;font-size:10px}h2{break-after:avoid}.signoffs{gap:10px}.signoff{font-size:9px}}
  </style></head><body><main><header class="form-header"><div class="form-brand-row"><img class="uidms-logo" src="${uidmsLogoData}" alt="UIDMS - User Identity Management"><div class="bank-heading">Commercial Bank of Ceylon PLC<small>Bangladesh Operations</small></div><img class="bank-logo" src="${bankLogoData}" alt="Commercial Bank"></div><h1>${e(formTitle(report))}</h1><p class="form-instruction">${e(formInstruction(report))}</p></header>
  <section class="meta"><div><strong>Ticket</strong> ${e(report.ticket)}</div><div><strong>Status</strong> ${e(report.status)}</div></section>
- <section class="meta">${[['Requested by',report.requester.name],['Employee ID',report.requester.employeeId],['Branch',report.requester.branch],['Department',report.requester.department],['Request time',documentTime(report.requester.at)],['Generated by',report.generatedBy]].map(([key,value])=>`<div><strong>${e(key)}</strong> ${e(value)}</div>`).join('')}</section>
- <h2>Employees / beneficiaries</h2>${table(['Name','Employee ID'],report.people.map(row=>[row.name,row.employeeId]))}
+ <section class="meta">${[['Requested by',report.requester.name],['Employee ID',report.requester.employeeId],['Designation',report.requester.designation],['Branch',report.requester.branch],['Department',report.requester.department],['Request time',documentTime(report.requester.at)],['Generated by',report.generatedBy]].map(([key,value])=>`<div><strong>${e(key)}</strong> ${e(value)}</div>`).join('')}</section>
+ <h2>Employees / beneficiaries</h2>${table(['Name','Employee ID','Designation'],report.people.map(row=>[row.name,row.employeeId,row.designation||'Not recorded']))}
  <h2>Requested systems and roles</h2>${table(['System','Role','Operation','Reason'],report.items.map(row=>[row.system,row.role,row.operation,row.reason]))}
  ${report.justification?`<h2>Business justification / Remarks</h2><p>${e(report.justification)}</p>`:''}
  ${report.fields.length?`<h2>Submitted request details</h2>${table(['Field','Value'],report.fields.map(row=>[row.label,row.value]))}`:''}
