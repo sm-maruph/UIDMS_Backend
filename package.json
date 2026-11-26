@@ -32,6 +32,7 @@
     "mssql": "^12.0.0",
     "nodemailer": "^10.6.0",
     "otpauth": "^9.4.0",
+    "pdfkit": "^0.21.0",
     "zod": "^4.1.0"
   },
   "devDependencies": {

@@ -9,6 +9,8 @@ import {assertVersion,assertReview,validateJustification} from './policy.js';
 import {hasRole} from '../auth/authorization.js';
 import {audit} from '../audit/service.js';
 import {raiseQuery} from '../queries/routes.js';
+import {requestDocument,documentHtml} from './document.js';
+import {documentPdf} from './document-pdf.js';
 
 // Exported request shape is deliberately separate from a server-managed ticket.
 export function requestRoutes(db){
@@ -17,6 +19,17 @@ export function requestRoutes(db){
  router.post('/',async(req,res)=>res.status(201).json(await createTicket(db,req,parse(createRequest,req.body))));
  router.put('/:id',async(req,res)=>{await replaceTicket(db,req,uuidParam(req),parse(createRequest.safeExtend({version}),req.body));res.status(204).end();});
  router.get('/:id',async(req,res)=>{const ticket=await loadTicket(db.query,uuidParam(req),req.user);res.json(await details(db.query,ticket,req.user));});
+ router.get('/:id/document',async(req,res)=>{
+  requireCondition(hasRole(req.user,'CITO','IT','Admin','Super Admin'),403,'FORBIDDEN','Only CITO, IT, Admin and Super Admin may generate request documents.');
+  const {format}=parse(z.object({format:z.enum(['html','pdf']).default('pdf')}).strict(),req.query);
+  const requestId=uuidParam(req);
+  const report=await db.transaction(async query=>{const ticket=await loadTicket(query,requestId,req.user);const data=await details(query,ticket,req.user);return requestDocument(data,req.user);});
+  const filename=String(report.ticket).replace(/[^a-zA-Z0-9_-]/g,'_').slice(0,80)+'-request';
+  const file=format==='html'?documentHtml(report):await documentPdf(report);
+  await audit(db.query,req,'request.document_generated',requestId,{format,ticketNumber:report.ticket});
+  if(format==='html')return res.type('html').send(file);
+  res.attachment(filename+'.pdf').type('application/pdf').send(file);
+ });
  router.patch('/:id',async(req,res)=>{
   const requestId=uuidParam(req),body=parse(editRequest,req.body);
   await db.transaction(async query=>{

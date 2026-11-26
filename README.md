@@ -13,6 +13,7 @@ Start with the SSMS steps below. Further documentation:
 - [Department and branch approvers by system ID](docs/APPROVER-ASSIGNMENTS.md)
 - [Roles, Admin permissions and timed acting appointments](docs/ROLES-AND-ACTING.md)
 - [Dependency review and administrative deletion](docs/REVIEWED-DELETION.md)
+- [Request printing and downloadable PDFs](docs/REQUEST-DOCUMENTS.md)
 
 ## Requirements
 
