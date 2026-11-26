@@ -8,7 +8,7 @@ import {testConfig,user,actorId,otherId} from './helpers.js';
 const csrf='a'.repeat(43),session='b'.repeat(43);
 function setup(handler){
  const calls=[];
- const db={query:async(text,params)=>{calls.push({text,params});if(text.startsWith('UPDATE dbo.Sessions SET LastSeenAt'))return {recordsets:[[{TokenHash:digest(session)}],[{...user,CsrfHash:digest(csrf)}]]};return handler?handler(text,params):{recordset:[],recordsets:[[]]};},transaction:async fn=>fn(db.query)};
+ const db={query:async(text,params)=>{calls.push({text,params});if(text.startsWith('UPDATE s SET ExpiresAt=CASE'))return {recordset:[{AuthenticatedAt:user.AuthenticatedAt,SessionLastSeenAt:new Date(),SessionExpiresAt:new Date(Date.now()+1800000)}]};if(text.startsWith('UPDATE dbo.Sessions SET LastSeenAt'))return {recordsets:[[{TokenHash:digest(session)}],[{...user,CsrfHash:digest(csrf)}]]};return handler?handler(text,params):{recordset:[],recordsets:[[]]};},transaction:async fn=>fn(db.query)};
  return {app:createApp({db,config:testConfig}),calls};
 }
 test('health response uses security headers and exposes no implementation signature',async()=>{

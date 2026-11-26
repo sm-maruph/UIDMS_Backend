@@ -1,4 +1,5 @@
 import {sessionCsrf} from './session-window.js';
+import {renewSession} from './session-renewal.js';
 import {Router} from 'express';
 import {z,text,parse} from '../../core/validation.js';
 import {p} from '../../core/db.js';
@@ -42,7 +43,14 @@ export function authRoutes(db,auth,config){
  });
  router.use(auth.authenticate);
  router.get('/status',(req,res)=>res.json({authenticated:true,session:req.sessionWindow}));
- router.post('/continue',async(req,res)=>{const body=parse(z.object({reason:z.enum(['activity','continue']).default('continue')}).strict(),req.body);if(body.reason==='continue')await audit(db.query,req,'auth.session_continued',req.user.Id);res.json({authenticated:true,session:req.sessionWindow});});
+ router.post('/continue',async(req,res)=>{
+  const body=parse(z.object({reason:z.enum(['activity','continue']).default('continue')}).strict(),req.body);
+  if(body.reason==='continue'){
+   req.sessionWindow=await renewSession(db,req,config);
+   res.cookie(auth.cookieName,req.cookies[auth.cookieName],{...auth.cookieOptions,maxAge:Math.max(0,Date.parse(req.sessionWindow.absoluteExpiresAt)-Date.now())});
+  }
+  res.json({authenticated:true,session:req.sessionWindow});
+ });
  router.post('/logout',async(req,res)=>{await db.transaction(async query=>{await closeAuditSessions(query,{sessionId:req.auditSessionId,reason:'logout',recordEvent:false});await query('UPDATE dbo.Sessions SET RevokedAt=SYSUTCDATETIME() WHERE TokenHash=@hash',{hash:p.str(req.sessionHash,64)});await audit(query,req,'auth.logout',req.user.Id);});res.clearCookie(auth.cookieName,{...auth.cookieOptions,maxAge:undefined});res.status(204).end();});
  router.post('/password',validate(z.object({currentPassword:z.string().max(128),newPassword:passwordSchema}).strict()),async(req,res)=>{
   requireCondition(localLoginEnabled(config),403,'LOCAL_LOGIN_DISABLED','UIDMS uses Active Directory. Change your password through your organization’s AD password service.');

@@ -18,7 +18,7 @@ function setup({demo=true,enabled=true,remote=false,existing=[],choices=[{Id:sys
   if(sql.startsWith('SELECT Id FROM dbo.Lookups'))return {recordset:designation?[{Id:designationId}]:[]};
   if(sql.startsWith('SELECT g.Id'))return {recordset:existing};
   if(sql.startsWith('SELECT s.Id'))return {recordset:choices};
-  if(sql.startsWith('UPDATE dbo.Users SET DesignationId'))return {recordset:[{...current,DesignationId:params.designation.value,Version:Buffer.from('0000000000000002','hex')}]};
+  if(sql.startsWith('UPDATE dbo.Users SET DesignationId'))return {recordset:[{...current,Email:params.hasEmail.value?params.email.value:current.Email,DesignationId:params.designation.value,Version:Buffer.from('0000000000000002','hex')}]};
   return {recordset:[]};
  };
  const db={query,transaction:work=>work(query)};
@@ -86,4 +86,14 @@ test('profile read exposes own access and restricts direct editing by role',asyn
   const {app}=setup({role,existing:[{Id:otherId,SystemId:systemId,SystemRoleId:roleId}]});const response=await request(app).get('/profile');
   assert.equal(response.status,200);assert.equal(response.body.user.id,actorId);assert.equal(response.body.access.length,1);assert.equal(response.body.canEditAccess,['IT','Admin','Super Admin'].includes(role));
  }
+});
+test('users can update only their own company notification email; omitted email is preserved',async()=>{
+ const f=setup();const saved=await request(f.app).patch('/profile').send({...f.body,email:'Employee@COMBANKBD.COM'});
+ assert.equal(saved.status,200);assert.equal(saved.body.user.email,'employee@combankbd.com');
+ const update=f.calls.find(call=>call.sql.startsWith('UPDATE dbo.Users'));assert.equal(update.params.id.value,actorId);assert.equal(update.params.hasEmail.value,true);
+ for(const email of ['personal@gmail.com','bad address','name@combankbd.com\r\nBcc:evil@example.com']){
+  const bad=setup();assert.equal((await request(bad.app).patch('/profile').send({...bad.body,email})).status,400);assert.equal(bad.calls.some(call=>call.sql.startsWith('UPDATE dbo.Users')),false);
+ }
+ const unchanged=setup();assert.equal((await request(unchanged.app).patch('/profile').send(unchanged.body)).status,200);assert.equal(unchanged.calls.find(call=>call.sql.startsWith('UPDATE dbo.Users')).params.hasEmail.value,false);
+ const clear=setup();assert.equal((await request(clear.app).patch('/profile').send({...clear.body,email:''})).status,200);assert.equal(clear.calls.find(call=>call.sql.startsWith('UPDATE dbo.Users')).params.email.value,null);
 });
