@@ -47,7 +47,7 @@ export function googleRoutes(db,config,gmail){
   diagnostic('gmail.setup.google_redirect',req,{sessionValidated:true});res.cookie(setupCookie,entry.browser,cookieOptions());res.redirect(302,entry.authorizationUrl);
  });
  browser.get('/auth/google/callback',async(req,res)=>{
-  enabled();const input=parse(z.object({state:opaque,code:z.string().min(1).max(4096).optional(),error:z.string().max(200).optional(),scope:z.string().max(2000).optional(),authuser:z.string().max(20).optional(),prompt:z.string().max(100).optional(),hd:z.string().max(253).optional()}).strict(),req.query);
+  enabled();const input=parse(z.object({state:opaque,iss:z.enum(['https://accounts.google.com','accounts.google.com']).optional(),code:z.string().min(1).max(4096).optional(),error:z.string().max(200).optional(),scope:z.string().max(2000).optional(),authuser:z.string().max(20).optional(),prompt:z.string().max(100).optional(),hd:z.string().max(253).optional()}).strict(),req.query);
   const entry=findState(input.state);states.delete(digest(input.state));
   requireCondition(entry.started&&typeof req.cookies?.[setupCookie]==='string'&&equal(req.cookies[setupCookie],entry.browser),400,'GMAIL_STATE_INVALID','Google authorization must finish in the browser that opened the setup link.');
   const {maxAge,...clearOptions}=cookieOptions();res.clearCookie(setupCookie,clearOptions);await validSession(entry);

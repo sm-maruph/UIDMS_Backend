@@ -19,6 +19,17 @@ test('Google sender setup uses offline consent, PKCE, verified identity and one-
  assert.equal((await request(f.app).get('/auth/google/callback').query({state:flow.state,code:'fixture-code'}).set('Cookie',flow.cookie)).status,400);
  const status=await request(f.app).get('/api/admin/gmail/status');assert.equal(status.status,200);assert.equal(status.body.connected,true);assert.equal(JSON.stringify(status.body).includes('fixture-refresh-token'),false);assert.equal(status.body.automatedDeliveryEnabled,false);
 });
+test('callback accepts Google issuer metadata and rejects other issuers before exchanging tokens',async()=>{
+ for(const iss of ['https://accounts.google.com','accounts.google.com']){
+  const f=fixture(),flow=await begin(f);
+  const response=await request(f.app).get('/auth/google/callback').query({state:flow.state,code:'fixture-code',iss}).set('Cookie',flow.cookie);
+  assert.equal(response.status,303);assert.ok(f.getSaved()?.refreshToken);
+ }
+ const f=fixture(),flow=await begin(f);
+ const response=await request(f.app).get('/auth/google/callback').query({state:flow.state,code:'fixture-code',iss:'https://other.example'}).set('Cookie',flow.cookie);
+ assert.equal(response.status,400);assert.equal(f.getSaved(),null);assert.equal(f.calls.some(call=>call.tokenRequest),false);
+});
+
 test('unknown states, missing browser cookie, wrong Workspace identity and wrong nonce never save tokens',async()=>{
  for(const identity of [{email:'wrong@combankbd.com'},{email_verified:false},{hd:'other.example'},{nonce:'wrong'}]){const f=fixture({identity}),flow=await begin(f);const response=await request(f.app).get('/auth/google/callback').query({state:flow.state,code:'fixture-code'}).set('Cookie',flow.cookie);assert.equal(response.status,403);assert.equal(f.getSaved(),null);}
  const f=fixture(),flow=await begin(f);assert.equal((await request(f.app).get('/auth/google/callback').query({state:flow.state,code:'fixture-code'})).status,400);assert.equal(f.getSaved(),null);
